@@ -1,0 +1,6 @@
+{
+  "name": "مِداد — متجر أدوات الخط والمناهج",
+  "description": "متجر إلكتروني خفيف لأدوات الخط العربي والمناهج التعليمية مرتبط بـ Google Sheets وتيليجرام ومستضاف على Vercel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
