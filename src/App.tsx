@@ -1,279 +1,400 @@
-import { useCallback, useEffect, useState } from 'react';
-import { CartDrawer } from './components/CartDrawer';
-import { Header } from './components/Header';
-import { OfflineNotice, PWAInstallButton } from './components/MediaElements';
-import { loadCart, saveCart } from './lib/storage';
-import { AdminPage } from './pages/AdminPage';
-import { CheckoutPage } from './pages/CheckoutPage';
-import { HomePage } from './pages/HomePage';
-import { MyOrdersPage } from './pages/MyOrdersPage';
-import { OrderPage } from './pages/OrderPage';
-import { ProductPage } from './pages/ProductPage';
-import type {
-  CartItem,
-  PublicProduct,
-  StoreCatalogResponse,
-  StoreSettings,
-} from './types';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
-const FALLBACK_SETTINGS: StoreSettings = {
-  storeName: 'مِداد',
-  tagline: 'أدوات الخط العربي الأصيلة والمناهج التعليمية المتدرجة',
-  logoUrl: '/icon.svg',
-  primaryColor: '#0F4C3F',
-  currency: 'ر.س',
-  deliveryFee: 25,
-  freeShippingOver: 250,
-  announcement: '',
-  whatsapp: '',
-  telegramUsername: '',
-  botUsername: '',
-  transferInfo: '',
-  isOpen: true,
-  contactPayEnabled: true,
-  onlinePayEnabled: false,
-};
+import { useCallback, useEffect, useState } from 'react';
+import { ShoppingBag, X } from 'lucide-react';
+import type { Order, Product, StoreBootstrapData } from './shared/types.ts';
+import { storeApi } from './client/lib/api.ts';
+import { StorefrontView } from './client/shop/StorefrontView.tsx';
+import { ProductModal } from './client/shop/ProductModal.tsx';
+import { CartCheckoutDrawer, type CartEntry } from './client/shop/CartCheckoutDrawer.tsx';
+import { OrdersTrackingView } from './client/shop/OrdersTrackingView.tsx';
+import { AdminPanel } from './client/admin/AdminPanel.tsx';
+import { OfflineIndicator } from './client/components/PWAControls.tsx';
+
+type ActiveRoute = 'shop' | 'orders' | 'admin';
+
+const CART_STORAGE_KEY = 'nukhba_cart_v1';
+const ORDERS_STORAGE_KEY = 'nukhba_my_orders_v1';
+const FAV_STORAGE_KEY = 'nukhba_favorites_v1';
 
 export default function App() {
-  const [path, setPath] = useState<string>(() => window.location.pathname || '/');
-  const [catalog, setCatalog] = useState<StoreCatalogResponse>({
-    settings: FALLBACK_SETTINGS,
-    categories: [],
-    banners: [],
-    products: [],
+  const [route, setRoute] = useState<ActiveRoute>(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) return 'admin';
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/orders')) return 'orders';
+    return 'shop';
   });
+
+  const [storeData, setStoreData] = useState<StoreBootstrapData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [cart, setCart] = useState<CartItem[]>(() => loadCart());
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
   const [cartOpen, setCartOpen] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [toastMsg, setToastMsg] = useState('');
 
-  const navigate = useCallback((nextPath: string) => {
-    if (nextPath !== window.location.pathname) {
-      window.history.pushState({}, '', nextPath);
+  // Admin token held strictly in memory
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+
+  const [cartItems, setCartItems] = useState<CartEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(CART_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
     }
-    setPath(nextPath);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  });
 
-  useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname || '/');
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  const [savedOrders, setSavedOrders] = useState<Order[]>(() => {
+    try {
+      const raw = localStorage.getItem(ORDERS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
 
-  const fetchCatalog = useCallback(async () => {
-    setLoading(true);
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(FAV_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const fetchBootstrap = useCallback(async () => {
     setLoadError('');
     try {
-      const res = await fetch('/api/store');
-      if (!res.ok) throw new Error('Store load error');
-      const data = (await res.json()) as StoreCatalogResponse;
-      setCatalog(data);
-    } catch {
-      setLoadError('تعذر تحميل المنتجات حالياً، يرجى تحديث الصفحة.');
+      const data = await storeApi.bootstrap();
+      setStoreData(data);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'تعذر تحميل بيانات المتجر');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void fetchCatalog();
-  }, [fetchCatalog]);
+    fetchBootstrap();
+    // Initialize Telegram Mini App viewport if running inside Telegram
+    const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void; expand?: () => void } } })
+      .Telegram?.WebApp;
+    tg?.ready?.();
+    tg?.expand?.();
+  }, [fetchBootstrap]);
 
   useEffect(() => {
-    saveCart(cart);
-  }, [cart]);
-
-  useEffect(() => {
-    if (catalog.settings.storeName) {
-      document.title = `${catalog.settings.storeName} — أدوات الخط والمناهج التعليمية`;
+    try {
+      localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cartItems));
+    } catch {
+      // ignore storage quota errors
     }
-  }, [catalog.settings.storeName]);
+  }, [cartItems]);
 
-  const handleAddToCart = (product: PublicProduct, qty = 1) => {
-    setCart((prev) => {
-      const existing = prev.find((item) => item.productId === product.id);
-      const maxStock =
-        product.type === 'physical' && product.stock >= 0 ? product.stock : 50;
+  useEffect(() => {
+    try {
+      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(savedOrders));
+    } catch {
+      // ignore
+    }
+  }, [savedOrders]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FAV_STORAGE_KEY, JSON.stringify(favorites));
+    } catch {
+      // ignore
+    }
+  }, [favorites]);
+
+  const navigate = (nextRoute: ActiveRoute) => {
+    setRoute(nextRoute);
+    const nextPath = nextRoute === 'shop' ? '/' : `/${nextRoute}`;
+    window.history.pushState({}, '', nextPath);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    const onPop = () => {
+      if (window.location.pathname.startsWith('/admin')) setRoute('admin');
+      else if (window.location.pathname.startsWith('/orders')) setRoute('orders');
+      else setRoute('shop');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg((prev) => (prev === msg ? '' : prev)), 2600);
+  };
+
+  const addToCart = (product: Product, qty: number, variant: string) => {
+    const key = `${product.id}::${variant}`;
+    setCartItems((prev) => {
+      const existing = prev.find((i) => i.key === key);
       if (existing) {
-        const nextQty = Math.min(maxStock, existing.qty + qty);
-        return prev.map((item) =>
-          item.productId === product.id ? { ...item, qty: nextQty } : item,
+        return prev.map((i) =>
+          i.key === key ? { ...i, qty: Math.min(product.stock, i.qty + qty) } : i
         );
       }
-      return [...prev, { productId: product.id, qty: Math.min(maxStock, qty) }];
+      return [...prev, { key, product, variant, qty }];
     });
-    setCartOpen(true);
+    showToast(`تمت إضافة "${product.name}" إلى السلة`);
   };
 
-  const handleUpdateQty = (productId: string, nextQty: number) => {
-    if (nextQty <= 0) {
-      setCart((prev) => prev.filter((item) => item.productId !== productId));
+  const updateCartQty = (key: string, qty: number) => {
+    if (qty <= 0) {
+      setCartItems((prev) => prev.filter((i) => i.key !== key));
       return;
     }
-    setCart((prev) =>
-      prev.map((item) =>
-        item.productId === productId ? { ...item, qty: nextQty } : item,
-      ),
+    setCartItems((prev) => prev.map((i) => (i.key === key ? { ...i, qty } : i)));
+  };
+
+  const removeCartItem = (key: string) => {
+    setCartItems((prev) => prev.filter((i) => i.key !== key));
+  };
+
+  const toggleFavorite = (productId: string) => {
+    setFavorites((prev) =>
+      prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]
     );
   };
 
-  const handleRemoveCart = (productId: string) => {
-    setCart((prev) => prev.filter((item) => item.productId !== productId));
+  const upsertSavedOrder = (order: Order) => {
+    setSavedOrders((prev) => {
+      const exists = prev.some((o) => o.id === order.id);
+      if (exists) return prev.map((o) => (o.id === order.id ? order : o));
+      return [order, ...prev];
+    });
   };
 
-  const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
+  const totalCartCount = cartItems.reduce((sum, i) => sum + i.qty, 0);
 
-  const productMatch = /^\/p\/([^/]+)$/.exec(path);
-  const orderMatch = /^\/o\/([^/]+)$/.exec(path);
-
-  const renderPage = () => {
-    if (loading && catalog.products.length === 0) {
-      return (
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-20 text-center text-sm text-[#5F5C54]">
-          جاري تجهيز المتجر...
-        </div>
-      );
-    }
-
-    if (loadError && catalog.products.length === 0) {
-      return (
-        <div className="max-w-xl mx-auto px-4 sm:px-6 py-20 text-center space-y-4">
-          <p className="text-base font-medium text-[#1A1A18]">{loadError}</p>
-          <button
-            type="button"
-            onClick={() => void fetchCatalog()}
-            className="px-5 py-2.5 rounded-lg bg-[#0F4C3F] text-white text-sm font-medium"
-          >
-            إعادة المحاولة
-          </button>
-        </div>
-      );
-    }
-
-    if (productMatch) {
-      const productId = decodeURIComponent(productMatch[1]);
-      const product = catalog.products.find((p) => p.id === productId);
-      return (
-        <ProductPage
-          product={product}
-          categories={catalog.categories}
-          settings={catalog.settings}
-          onNavigate={navigate}
-          onAddToCart={handleAddToCart}
-        />
-      );
-    }
-
-    if (path === '/checkout') {
-      return (
-        <CheckoutPage
-          items={cart}
-          products={catalog.products}
-          settings={catalog.settings}
-          onNavigate={navigate}
-          onClearCart={() => setCart([])}
-        />
-      );
-    }
-
-    if (orderMatch) {
-      const token = decodeURIComponent(orderMatch[1]);
-      return <OrderPage token={token} onNavigate={navigate} />;
-    }
-
-    if (path === '/orders') {
-      return <MyOrdersPage onNavigate={navigate} />;
-    }
-
-    if (path === '/admin') {
-      return <AdminPage onCatalogUpdated={fetchCatalog} />;
-    }
-
+  if (loading && !storeData) {
     return (
-      <HomePage
-        settings={catalog.settings}
-        categories={catalog.categories}
-        banners={catalog.banners}
-        products={catalog.products}
-        onNavigate={navigate}
-        onAddToCart={(p) => handleAddToCart(p, 1)}
-      />
+      <div className="min-h-screen flex items-center justify-center bg-[#FAF9F6] text-sm text-[#6E6A63]">
+        جاري تجهيز المتجر...
+      </div>
     );
-  };
+  }
+
+  if (loadError && !storeData) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#FAF9F6] px-4 text-center space-y-4">
+        <p className="text-base font-semibold text-red-700">{loadError}</p>
+        <button
+          type="button"
+          onClick={fetchBootstrap}
+          className="rounded-lg bg-[#141413] px-5 py-2.5 text-sm font-semibold text-white cursor-pointer"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
+  if (!storeData) return null;
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#FAF8F4] text-[#1A1A18]">
-      <Header
-        settings={catalog.settings}
-        cartCount={cartCount}
-        currentPath={path}
-        onNavigate={navigate}
-        onOpenCart={() => setCartOpen(true)}
-      />
+    <div className="min-h-screen flex flex-col bg-[#FAF9F6] text-[#141413]">
+      {/* Slim Dismissible Announcement Bar */}
+      {!bannerDismissed && storeData.settings.announcement_text && (
+        <div className="bg-[#141413] text-[#FAF9F6] text-xs px-4 py-2 flex items-center justify-between gap-4">
+          <span className="mx-auto truncate">{storeData.settings.announcement_text}</span>
+          <button
+            type="button"
+            onClick={() => setBannerDismissed(true)}
+            className="text-[#B8B2A8] hover:text-white shrink-0 cursor-pointer"
+            aria-label="إخفاء الشريط"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
-      <div className="flex-1">{renderPage()}</div>
+      {/* 3-Zone Top Bar */}
+      <header className="sticky top-0 z-40 border-b border-[#E5E2DC] bg-[#FAF9F6]/95 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-8 px-4 py-3.5">
+          {/* Zone 1: Single text brand wordmark */}
+          <button
+            type="button"
+            onClick={() => navigate('shop')}
+            className="font-display text-xl font-extrabold tracking-tight text-[#141413] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            {storeData.settings.store_name}
+          </button>
 
-      <footer className="border-t border-[#E5E0D5] bg-white mt-12">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-          <div>
-            <p className="font-display text-xl font-bold text-[#1A1A18]">
-              {catalog.settings.storeName}
-            </p>
-            <p className="text-xs text-[#5F5C54] mt-1">{catalog.settings.tagline}</p>
+          {/* Zone 2: Clean text nav links */}
+          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-[#6E6A63]">
+            <button
+              type="button"
+              onClick={() => navigate('shop')}
+              className={`hover:text-[#141413] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'shop' ? 'text-[#141413] underline underline-offset-8' : ''
+              }`}
+            >
+              الرئيسية
+            </button>
+            <a
+              href="#catalog"
+              onClick={() => {
+                if (route !== 'shop') navigate('shop');
+              }}
+              className="hover:text-[#141413] transition-colors whitespace-nowrap shrink-0"
+            >
+              المنتجات
+            </a>
+            <button
+              type="button"
+              onClick={() => navigate('orders')}
+              className={`hover:text-[#141413] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'orders' ? 'text-[#141413] underline underline-offset-8' : ''
+              }`}
+            >
+              طلباتي
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('admin')}
+              className={`hover:text-[#141413] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'admin' ? 'text-[#141413] underline underline-offset-8' : ''
+              }`}
+            >
+              لوحة التحكم
+            </button>
+          </nav>
+
+          {/* Zone 3: 1 primary action */}
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setCartOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ShoppingBag className="h-4 w-4" />
+              <span>السلة</span>
+              <span className="tabular-nums">({totalCartCount})</span>
+            </button>
           </div>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <a
-              href="/orders"
-              onClick={(e) => {
-                e.preventDefault();
-                navigate('/orders');
-              }}
-              className="text-[#5F5C54] hover:text-[#1A1A18]"
-            >
-              متابعة طلباتي
-            </a>
-            <a
-              href="/admin"
-              onClick={(e) => {
-                e.preventDefault();
-                navigate('/admin');
-              }}
-              className="text-[#5F5C54] hover:text-[#1A1A18]"
-            >
-              الإعدادات والإدارة
-            </a>
-            {catalog.settings.whatsapp && (
-              <a
-                href={`https://wa.me/${catalog.settings.whatsapp.replace(/[^\d]/g, '')}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#5F5C54] hover:text-[#1A1A18]"
-              >
-                تواصل واتساب
-              </a>
-            )}
-            <PWAInstallButton variant="footer" />
+        {/* Mobile Secondary Nav */}
+        <div className="flex md:hidden items-center justify-around border-t border-[#E5E2DC] px-2 py-2 text-xs font-semibold text-[#6E6A63]">
+          <button
+            type="button"
+            onClick={() => navigate('shop')}
+            className={`px-2 py-1 whitespace-nowrap ${route === 'shop' ? 'text-[#141413]' : ''}`}
+          >
+            المتجر
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('orders')}
+            className={`px-2 py-1 whitespace-nowrap ${route === 'orders' ? 'text-[#141413]' : ''}`}
+          >
+            طلباتي
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('admin')}
+            className={`px-2 py-1 whitespace-nowrap ${route === 'admin' ? 'text-[#141413]' : ''}`}
+          >
+            لوحة التحكم والإعدادات
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1">
+        {route === 'shop' && (
+          <StorefrontView
+            data={storeData}
+            favorites={favorites}
+            onToggleFavorite={toggleFavorite}
+            onSelectProduct={(p) => setSelectedProduct(p)}
+            onQuickAdd={(p) => addToCart(p, 1, p.variants[0] || '')}
+          />
+        )}
+
+        {route === 'orders' && (
+          <OrdersTrackingView
+            savedOrders={savedOrders}
+            settings={storeData.settings}
+            onUpdateSavedOrder={upsertSavedOrder}
+          />
+        )}
+
+        {route === 'admin' && (
+          <AdminPanel
+            token={adminToken}
+            onTokenChange={setAdminToken}
+            onCatalogUpdated={fetchBootstrap}
+          />
+        )}
+      </main>
+
+      {/* Clean Footer */}
+      <footer className="border-t border-[#E5E2DC] bg-white">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-6 text-xs text-[#6E6A63]">
+          <p>
+            © {new Date().getFullYear()} {storeData.settings.store_name} — مدعوم بـ Google Sheets وتيليجرام
+          </p>
+          <div className="flex items-center gap-5">
+            <button type="button" onClick={() => navigate('shop')} className="hover:text-[#141413] cursor-pointer">
+              المتجر
+            </button>
+            <button type="button" onClick={() => navigate('orders')} className="hover:text-[#141413] cursor-pointer">
+              تتبع الطلب
+            </button>
+            <button type="button" onClick={() => navigate('admin')} className="hover:text-[#141413] cursor-pointer">
+              الإدارة والربط
+            </button>
           </div>
         </div>
       </footer>
 
-      <CartDrawer
-        isOpen={cartOpen}
-        items={cart}
-        products={catalog.products}
-        settings={catalog.settings}
+      {/* Product Detail Modal */}
+      {selectedProduct && (
+        <ProductModal
+          product={selectedProduct}
+          category={storeData.categories.find((c) => c.id === selectedProduct.category_id)}
+          settings={storeData.settings}
+          isFavorite={favorites.includes(selectedProduct.id)}
+          onToggleFavorite={toggleFavorite}
+          onAddToCart={addToCart}
+          onClose={() => setSelectedProduct(null)}
+        />
+      )}
+
+      {/* Slide-over Cart & Checkout Drawer */}
+      <CartCheckoutDrawer
+        open={cartOpen}
+        items={cartItems}
+        cities={storeData.cities}
+        settings={storeData.settings}
         onClose={() => setCartOpen(false)}
-        onUpdateQty={handleUpdateQty}
-        onRemove={handleRemoveCart}
-        onCheckout={() => {
-          setCartOpen(false);
-          navigate('/checkout');
+        onUpdateQty={updateCartQty}
+        onRemoveItem={removeCartItem}
+        onClearCart={() => setCartItems([])}
+        onOrderCreated={(order) => {
+          upsertSavedOrder(order);
+          fetchBootstrap();
         }}
       />
 
-      <OfflineNotice />
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="fixed bottom-5 right-5 z-50 rounded-lg bg-[#141413] px-4 py-2.5 text-xs font-medium text-white shadow-lg">
+          {toastMsg}
+        </div>
+      )}
+
+      <OfflineIndicator />
     </div>
   );
 }
