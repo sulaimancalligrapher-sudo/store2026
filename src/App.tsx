@@ -173,7 +173,7 @@ export default function App() {
     });
   };
 
-  const totalCartCount = cartItems.reduce((sum, i) => sum + i.qty, 0);
+  const totalCartCount = new Set(cartItems.map((i) => i.product.id)).size;
 
   if (loading && !storeData) {
     return (

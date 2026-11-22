@@ -120,6 +120,8 @@ function buildIntegrationStatus(): IntegrationStatus {
     hasClaimedAdminPassword: auth.hasClaimedAdminPassword,
     adminUsername: getActiveAdminUsername(),
     hasFileAppsScriptUrl: Boolean(BACKEND_CONFIG.appsScriptUrl.trim()),
+    appsScriptUrl: cfg.appsScriptUrl,
+    telegramAdminChatId: cfg.telegramAdminChatId,
   };
 }
 
@@ -728,14 +730,21 @@ export function createApp() {
         res.status(400).json({ error: 'كود الخصم مطلوب.' });
         return;
       }
+      const id = b.id ? String(b.id).trim() : `cpn_${Date.now().toString().slice(-5)}`;
+      let preservedUsedCount = Math.max(0, Number(b.used_count || 0));
+      if (b.id && b.used_count === undefined) {
+        const snap = await getSnapshot(false);
+        const existing = snap.coupons.find((c) => c.id === id);
+        if (existing) preservedUsedCount = existing.used_count;
+      }
       const coupon: Coupon = {
-        id: b.id ? String(b.id).trim() : `cpn_${Date.now().toString().slice(-5)}`,
+        id,
         code,
         discount_type: b.discount_type === 'fixed' ? 'fixed' : 'percent',
         discount_value: Math.max(1, Number(b.discount_value || 10)),
         min_order: Math.max(0, Number(b.min_order || 0)),
         max_uses: Math.max(1, Number(b.max_uses || 100)),
-        used_count: Math.max(0, Number(b.used_count || 0)),
+        used_count: preservedUsedCount,
         expires_at: String(b.expires_at || '2027-12-31').trim(),
         is_active: b.is_active !== false,
       };

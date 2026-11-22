@@ -131,6 +131,8 @@ export interface IntegrationStatus {
   hasClaimedAdminPassword: boolean;
   adminUsername: string;
   hasFileAppsScriptUrl: boolean;
+  appsScriptUrl: string;
+  telegramAdminChatId: string;
 }
 
 export interface SheetSchemaTab {

@@ -78,18 +78,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [banImage, setBanImage] = useState('/src/assets/images/hero_nukhba_banner_1795253789582.jpg');
 
   // City quick form
+  const [editingCityId, setEditingCityId] = useState<string | null>(null);
   const [cityName, setCityName] = useState('');
   const [cityFee, setCityFee] = useState('20');
   const [cityDays, setCityDays] = useState('1 - 2 يوم عمل');
   const [cityFreeMin, setCityFreeMin] = useState('400');
 
   // Coupon quick form
+  const [editingCouponId, setEditingCouponId] = useState<string | null>(null);
+  const [editingCouponUsedCount, setEditingCouponUsedCount] = useState<number>(0);
   const [cpnCode, setCpnCode] = useState('');
   const [cpnType, setCpnType] = useState<'percent' | 'fixed'>('percent');
   const [cpnVal, setCpnVal] = useState('15');
   const [cpnMin, setCpnMin] = useState('150');
   const [cpnMaxUses, setCpnMaxUses] = useState('100');
   const [cpnExpires, setCpnExpires] = useState('2027-12-31');
+
+  const [marketingFeedback, setMarketingFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const api = useMemo(() => (token ? createAdminApi(token) : null), [token]);
 
@@ -888,188 +893,382 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       {/* TAB 5: Coupons & Cities */}
       {tab === 'marketing' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Coupons */}
-          <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
-            <div className="flex items-center gap-2">
-              <Tag className="h-4 w-4 text-[#B45309]" />
-              <h2 className="text-base font-bold text-[#141413]">كوبونات الخصم (ورقة Coupons)</h2>
-            </div>
-
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                try {
-                  await api.saveCoupon({
-                    code: cpnCode.trim().toUpperCase(),
-                    discount_type: cpnType,
-                    discount_value: Number(cpnVal),
-                    min_order: Number(cpnMin),
-                    max_uses: Number(cpnMaxUses),
-                    expires_at: cpnExpires,
-                  });
-                  setCpnCode('');
-                  await refreshAll();
-                } catch (err) {
-                  handleMutationError(err, 'تعذر إضافة الكوبون');
-                }
-              }}
-              className="grid grid-cols-2 sm:grid-cols-3 gap-2.5"
+        <div className="space-y-4">
+          {marketingFeedback && (
+            <div
+              className={`rounded-xl border px-4 py-3 text-xs font-medium ${
+                marketingFeedback.type === 'ok'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-red-200 bg-red-50 text-red-900'
+              }`}
             >
-              <input
-                required
-                value={cpnCode}
-                onChange={(e) => setCpnCode(e.target.value.toUpperCase())}
-                placeholder="الكود (SAVE20)"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs font-mono-num uppercase focus:outline-none"
-              />
-              <select
-                value={cpnType}
-                onChange={(e) => setCpnType(e.target.value as 'percent' | 'fixed')}
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs focus:outline-none"
-              >
-                <option value="percent">نسبة مئوية (%)</option>
-                <option value="fixed">مبلغ ثابت ({currency})</option>
-              </select>
-              <input
-                required
-                type="number"
-                value={cpnVal}
-                onChange={(e) => setCpnVal(e.target.value)}
-                placeholder="القيمة"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs tabular-nums focus:outline-none"
-              />
-              <input
-                type="number"
-                value={cpnMin}
-                onChange={(e) => setCpnMin(e.target.value)}
-                placeholder="الحد الأدنى"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs tabular-nums focus:outline-none"
-              />
-              <input
-                type="date"
-                value={cpnExpires}
-                onChange={(e) => setCpnExpires(e.target.value)}
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs focus:outline-none"
-              />
-              <button
-                type="submit"
-                className="rounded-lg bg-[#141413] px-3 py-2 text-xs font-semibold text-white cursor-pointer"
-              >
-                إضافة كوبون
-              </button>
-            </form>
+              {marketingFeedback.text}
+            </div>
+          )}
 
-            <div className="divide-y divide-[#E5E2DC]">
-              {data.coupons.map((c) => (
-                <div key={c.id} className="flex items-center justify-between py-3 text-xs">
-                  <div>
-                    <span className="font-mono-num text-sm font-bold text-[#141413]">{c.code}</span>
-                    <span className="mr-2 text-[#44413C]">
-                      خصم {c.discount_value}
-                      {c.discount_type === 'percent' ? '%' : ` ${currency}`} · حد أدنى {c.min_order} · استخدام{' '}
-                      {c.used_count}/{c.max_uses}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await api.deleteCoupon(c.id);
-                        await refreshAll();
-                      } catch (err) {
-                        handleMutationError(err, 'تعذر حذف الكوبون');
-                      }
-                    }}
-                    className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer"
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Coupons */}
+            <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Tag className="h-4 w-4 text-[#B45309]" />
+                  <h2 className="text-base font-bold text-[#141413]">كوبونات الخصم (ورقة Coupons)</h2>
+                </div>
+                {editingCouponId && (
+                  <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+                    وضع تعديل كوبون
+                  </span>
+                )}
+              </div>
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setMarketingFeedback(null);
+                  try {
+                    const isEdit = Boolean(editingCouponId);
+                    await api.saveCoupon({
+                      id: editingCouponId || undefined,
+                      code: cpnCode.trim().toUpperCase(),
+                      discount_type: cpnType,
+                      discount_value: Number(cpnVal) || 0,
+                      min_order: Number(cpnMin) || 0,
+                      max_uses: Number(cpnMaxUses) || 100,
+                      used_count: isEdit ? editingCouponUsedCount : 0,
+                      expires_at: cpnExpires,
+                    });
+                    setEditingCouponId(null);
+                    setEditingCouponUsedCount(0);
+                    setCpnCode('');
+                    setCpnType('percent');
+                    setCpnVal('15');
+                    setCpnMin('150');
+                    setCpnMaxUses('100');
+                    setCpnExpires('2027-12-31');
+                    await refreshAll();
+                    setMarketingFeedback({
+                      type: 'ok',
+                      text: isEdit ? 'تم حفظ تعديل الكوبون بنجاح.' : 'تمت إضافة الكوبون بنجاح.',
+                    });
+                  } catch (err) {
+                    handleMutationError(err, 'تعذر حفظ الكوبون');
+                  }
+                }}
+                className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-3.5"
+              >
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">كود الكوبون</label>
+                  <input
+                    required
+                    value={cpnCode}
+                    onChange={(e) => setCpnCode(e.target.value.toUpperCase())}
+                    placeholder="SAVE20"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-mono-num uppercase focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">نوع الخصم</label>
+                  <select
+                    value={cpnType}
+                    onChange={(e) => setCpnType(e.target.value as 'percent' | 'fixed')}
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-2.5 py-2 text-xs focus:border-[#141413] focus:outline-none"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <option value="percent">نسبة مئوية (%)</option>
+                    <option value="fixed">مبلغ مباشر ({currency})</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">
+                    قيمة الخصم ({cpnType === 'percent' ? '%' : currency})
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={cpnVal}
+                    onChange={(e) => setCpnVal(e.target.value)}
+                    placeholder={cpnType === 'percent' ? '15' : '30'}
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">الحد الأدنى للطلب ({currency})</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={cpnMin}
+                    onChange={(e) => setCpnMin(e.target.value)}
+                    placeholder="0"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">الحد الأقصى للاستخدام</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={cpnMaxUses}
+                    onChange={(e) => setCpnMaxUses(e.target.value)}
+                    placeholder="100"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">تاريخ الانتهاء</label>
+                  <input
+                    type="date"
+                    value={cpnExpires}
+                    onChange={(e) => setCpnExpires(e.target.value)}
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div className="col-span-2 sm:col-span-3 flex items-center justify-end gap-2 pt-1">
+                  {editingCouponId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCouponId(null);
+                        setEditingCouponUsedCount(0);
+                        setCpnCode('');
+                        setCpnType('percent');
+                        setCpnVal('15');
+                        setCpnMin('150');
+                        setCpnMaxUses('100');
+                        setCpnExpires('2027-12-31');
+                      }}
+                      className="rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-medium text-[#44413C] hover:bg-[#EFECE6] cursor-pointer"
+                    >
+                      إلغاء التعديل
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
+                  >
+                    {editingCouponId ? 'حفظ تعديل الكوبون' : 'إضافة كوبون'}
                   </button>
                 </div>
-              ))}
-            </div>
-          </div>
+              </form>
 
-          {/* Cities */}
-          <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
-            <div className="flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-[#B45309]" />
-              <h2 className="text-base font-bold text-[#141413]">تسعيرة التوصيل حسب المدينة (ورقة Cities)</h2>
-            </div>
-
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                try {
-                  await api.saveCity({
-                    name: cityName.trim(),
-                    delivery_fee: Number(cityFee),
-                    estimated_days: cityDays.trim(),
-                    free_shipping_min: cityFreeMin ? Number(cityFreeMin) : null,
-                  });
-                  setCityName('');
-                  await refreshAll();
-                } catch (err) {
-                  handleMutationError(err, 'تعذر إضافة المدينة');
-                }
-              }}
-              className="grid grid-cols-2 sm:grid-cols-4 gap-2.5"
-            >
-              <input
-                required
-                value={cityName}
-                onChange={(e) => setCityName(e.target.value)}
-                placeholder="اسم المدينة"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs focus:outline-none"
-              />
-              <input
-                required
-                type="number"
-                value={cityFee}
-                onChange={(e) => setCityFee(e.target.value)}
-                placeholder="سعر التوصيل"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs tabular-nums focus:outline-none"
-              />
-              <input
-                value={cityDays}
-                onChange={(e) => setCityDays(e.target.value)}
-                placeholder="المدة (24 ساعة)"
-                className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs focus:outline-none"
-              />
-              <button
-                type="submit"
-                className="rounded-lg bg-[#141413] px-3 py-2 text-xs font-semibold text-white cursor-pointer"
-              >
-                إضافة مدينة
-              </button>
-            </form>
-
-            <div className="divide-y divide-[#E5E2DC]">
-              {data.cities.map((c) => (
-                <div key={c.id} className="flex items-center justify-between py-3 text-xs">
-                  <div>
-                    <span className="text-sm font-bold text-[#141413]">{c.name}</span>
-                    <span className="mr-2 text-[#44413C] tabular-nums">
-                      التوصيل: {c.delivery_fee} {currency} · {c.estimated_days}
-                      {c.free_shipping_min ? ` · مجاني فوق ${c.free_shipping_min}` : ''}
-                    </span>
+              <div className="divide-y divide-[#E5E2DC]">
+                {data.coupons.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-2 py-3 text-xs">
+                    <div className="min-w-0">
+                      <span className="font-mono-num text-sm font-bold text-[#141413]">{c.code}</span>
+                      <span className="mr-2 text-[#44413C]">
+                        {c.discount_type === 'percent'
+                          ? `خصم نسبة ${c.discount_value}%`
+                          : `خصم مبلغ مباشر ${c.discount_value} ${currency}`}{' '}
+                        · حد أدنى {c.min_order} · استخدام {c.used_count}/{c.max_uses}
+                        {c.expires_at ? ` · ينتهي ${c.expires_at}` : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        title="تعديل الكوبون"
+                        onClick={() => {
+                          setEditingCouponId(c.id);
+                          setEditingCouponUsedCount(c.used_count || 0);
+                          setCpnCode(c.code);
+                          setCpnType(c.discount_type);
+                          setCpnVal(String(c.discount_value));
+                          setCpnMin(String(c.min_order));
+                          setCpnMaxUses(String(c.max_uses));
+                          setCpnExpires(c.expires_at || '2027-12-31');
+                          setMarketingFeedback(null);
+                        }}
+                        className="rounded-md p-1.5 text-[#6E6A63] hover:bg-[#FAF9F6] hover:text-[#141413] cursor-pointer"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="حذف الكوبون"
+                        onClick={async () => {
+                          try {
+                            await api.deleteCoupon(c.id);
+                            if (editingCouponId === c.id) {
+                              setEditingCouponId(null);
+                              setCpnCode('');
+                            }
+                            await refreshAll();
+                            setMarketingFeedback({ type: 'ok', text: `تم حذف الكوبون ${c.code}.` });
+                          } catch (err) {
+                            handleMutationError(err, 'تعذر حذف الكوبون');
+                          }
+                        }}
+                        className="rounded-md p-1.5 text-[#8A847B] hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Cities */}
+            <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <MapPin className="h-4 w-4 text-[#B45309]" />
+                  <h2 className="text-base font-bold text-[#141413]">تسعيرة التوصيل حسب المدينة (ورقة Cities)</h2>
+                </div>
+                {editingCityId && (
+                  <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+                    وضع تعديل مدينة
+                  </span>
+                )}
+              </div>
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setMarketingFeedback(null);
+                  try {
+                    const isEdit = Boolean(editingCityId);
+                    await api.saveCity({
+                      id: editingCityId || undefined,
+                      name: cityName.trim(),
+                      delivery_fee: Number(cityFee) || 0,
+                      estimated_days: cityDays.trim(),
+                      free_shipping_min: cityFreeMin.trim() ? Number(cityFreeMin) : null,
+                    });
+                    setEditingCityId(null);
+                    setCityName('');
+                    setCityFee('20');
+                    setCityDays('1 - 2 يوم عمل');
+                    setCityFreeMin('400');
+                    await refreshAll();
+                    setMarketingFeedback({
+                      type: 'ok',
+                      text: isEdit ? 'تم حفظ تعديل المدينة بنجاح.' : 'تمت إضافة المدينة بنجاح.',
+                    });
+                  } catch (err) {
+                    handleMutationError(err, 'تعذر حفظ المدينة');
+                  }
+                }}
+                className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-3.5"
+              >
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">اسم المدينة</label>
+                  <input
+                    required
+                    value={cityName}
+                    onChange={(e) => setCityName(e.target.value)}
+                    placeholder="الرياض"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">سعر التوصيل ({currency})</label>
+                  <input
+                    required
+                    type="number"
+                    min={0}
+                    value={cityFee}
+                    onChange={(e) => setCityFee(e.target.value)}
+                    placeholder="20"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">مدة التوصيل</label>
+                  <input
+                    value={cityDays}
+                    onChange={(e) => setCityDays(e.target.value)}
+                    placeholder="1 - 2 يوم عمل"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">شحن مجاني فوق ({currency})</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={cityFreeMin}
+                    onChange={(e) => setCityFreeMin(e.target.value)}
+                    placeholder="اختياري"
+                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                  />
+                </div>
+                <div className="col-span-2 sm:col-span-4 flex items-center justify-end gap-2 pt-1">
+                  {editingCityId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCityId(null);
+                        setCityName('');
+                        setCityFee('20');
+                        setCityDays('1 - 2 يوم عمل');
+                        setCityFreeMin('400');
+                      }}
+                      className="rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-medium text-[#44413C] hover:bg-[#EFECE6] cursor-pointer"
+                    >
+                      إلغاء التعديل
+                    </button>
+                  )}
                   <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await api.deleteCity(c.id);
-                        await refreshAll();
-                      } catch (err) {
-                        handleMutationError(err, 'تعذر حذف المدينة');
-                      }
-                    }}
-                    className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer"
+                    type="submit"
+                    className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    {editingCityId ? 'حفظ تعديل المدينة' : 'إضافة مدينة'}
                   </button>
                 </div>
-              ))}
+              </form>
+
+              <div className="divide-y divide-[#E5E2DC]">
+                {data.cities.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-2 py-3 text-xs">
+                    <div className="min-w-0">
+                      <span className="text-sm font-bold text-[#141413]">{c.name}</span>
+                      <span className="mr-2 text-[#44413C] tabular-nums">
+                        التوصيل: {c.delivery_fee} {currency} · {c.estimated_days}
+                        {c.free_shipping_min ? ` · مجاني فوق ${c.free_shipping_min}` : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        title="تعديل المدينة"
+                        onClick={() => {
+                          setEditingCityId(c.id);
+                          setCityName(c.name);
+                          setCityFee(String(c.delivery_fee));
+                          setCityDays(c.estimated_days || '');
+                          setCityFreeMin(c.free_shipping_min !== null && c.free_shipping_min !== undefined ? String(c.free_shipping_min) : '');
+                          setMarketingFeedback(null);
+                        }}
+                        className="rounded-md p-1.5 text-[#6E6A63] hover:bg-[#FAF9F6] hover:text-[#141413] cursor-pointer"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="حذف المدينة"
+                        onClick={async () => {
+                          try {
+                            await api.deleteCity(c.id);
+                            if (editingCityId === c.id) {
+                              setEditingCityId(null);
+                              setCityName('');
+                            }
+                            await refreshAll();
+                            setMarketingFeedback({ type: 'ok', text: `تم حذف مدينة ${c.name}.` });
+                          } catch (err) {
+                            handleMutationError(err, 'تعذر حذف المدينة');
+                          }
+                        }}
+                        className="rounded-md p-1.5 text-[#8A847B] hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

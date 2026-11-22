@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -69,14 +69,29 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
   const [telegramNotified, setTelegramNotified] = useState(false);
   const [copiedIban, setCopiedIban] = useState(false);
+  const checkoutEnteredAtRef = useRef<number>(0);
+
+  const resetCheckoutForm = () => {
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerAddress('');
+    setTelegramUsername('');
+    setBankReference('');
+    setNotes('');
+    setCouponInput('');
+    setAppliedCoupon(null);
+    setCouponMessage('');
+    setErrorMsg('');
+  };
 
   // Auto-fill Telegram Mini App user if available
   useEffect(() => {
+    if (!open) return;
     const tg = (window as unknown as {
       Telegram?: { WebApp?: { initDataUnsafe?: { user?: { first_name?: string; last_name?: string; username?: string } } } };
     }).Telegram?.WebApp;
     const tgUser = tg?.initDataUnsafe?.user;
-    if (tgUser) {
+    if (tgUser && !confirmedOrder) {
       if (!customerName && tgUser.first_name) {
         setCustomerName([tgUser.first_name, tgUser.last_name].filter(Boolean).join(' '));
       }
@@ -93,6 +108,8 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
   }, [cities, customerCity]);
 
   if (!open) return null;
+
+  const distinctProductCount = new Set(items.map((i) => i.product.id)).size;
 
   const subtotal = items.reduce((sum, entry) => sum + entry.product.price * entry.qty, 0);
   const discountAmount = appliedCoupon ? Math.min(subtotal, appliedCoupon.discount) : 0;
@@ -125,6 +142,8 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
 
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (step !== 'checkout' || submitting || items.length === 0) return;
+    if (Date.now() - checkoutEnteredAtRef.current < 400) return;
     setErrorMsg('');
     setSubmitting(true);
     try {
@@ -148,8 +167,7 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
       setTelegramNotified(res.telegramNotified);
       onOrderCreated(res.order);
       onClearCart();
-      setAppliedCoupon(null);
-      setCouponInput('');
+      resetCheckoutForm();
       setStep('receipt');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'تعذر إتمام الطلب، يرجى المحاولة مرة أخرى.');
@@ -165,8 +183,18 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
   };
 
   const handleClose = () => {
-    if (step === 'receipt') setStep('cart');
+    if (step === 'receipt') {
+      setStep('cart');
+      setConfirmedOrder(null);
+      resetCheckoutForm();
+    }
     onClose();
+  };
+
+  const preventEnterSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+    }
   };
 
   return (
@@ -186,7 +214,7 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
               </button>
             )}
             <h2 className="text-lg font-bold text-[#141413]">
-              {step === 'cart' && `سلة المشتريات (${items.reduce((s, i) => s + i.qty, 0)})`}
+              {step === 'cart' && `سلة المشتريات (${distinctProductCount})`}
               {step === 'checkout' && 'إتمام الطلب والتوصيل'}
               {step === 'receipt' && 'تم استلام طلبك بنجاح'}
             </h2>
@@ -269,7 +297,7 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
           )}
 
           {step === 'checkout' && (
-            <form id="checkout-form" onSubmit={handleSubmitOrder} className="space-y-5">
+            <form id="checkout-form" onSubmit={handleSubmitOrder} autoComplete="off" className="space-y-5">
               {errorMsg && (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
                   {errorMsg}
@@ -282,8 +310,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                   <label className="mb-1 block text-xs font-medium text-[#44413C]">الاسم الكامل *</label>
                   <input
                     required
+                    autoComplete="off"
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
+                    onKeyDown={preventEnterSubmit}
                     placeholder="مثال: أحمد محمد"
                     className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2.5 text-sm text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
                   />
@@ -294,8 +324,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                     <input
                       required
                       type="tel"
+                      autoComplete="off"
                       value={customerPhone}
                       onChange={(e) => setCustomerPhone(e.target.value)}
+                      onKeyDown={preventEnterSubmit}
                       placeholder="05xxxxxxxx"
                       className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2.5 text-sm text-[#141413] tabular-nums focus:border-[#141413] focus:bg-white focus:outline-none"
                     />
@@ -303,8 +335,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                   <div>
                     <label className="mb-1 block text-xs font-medium text-[#44413C]">معرف تيليجرام (اختياري)</label>
                     <input
+                      autoComplete="off"
                       value={telegramUsername}
                       onChange={(e) => setTelegramUsername(e.target.value)}
+                      onKeyDown={preventEnterSubmit}
                       placeholder="@username"
                       className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2.5 text-sm text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
                     />
@@ -360,8 +394,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                 </label>
                 <div className="flex gap-2">
                   <input
+                    autoComplete="off"
                     value={couponInput}
                     onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                    onKeyDown={preventEnterSubmit}
                     placeholder="أدخل كود الخصم"
                     className="flex-1 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm uppercase text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
                   />
@@ -435,8 +471,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                         رقم مرجع الحوالة أو اسم المحوّل (اختياري)
                       </label>
                       <input
+                        autoComplete="off"
                         value={bankReference}
                         onChange={(e) => setBankReference(e.target.value)}
+                        onKeyDown={preventEnterSubmit}
                         placeholder="مثال: رقم العملية أو اسم الحساب المحول منه"
                         className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs text-[#141413] focus:border-[#141413] focus:outline-none"
                       />
@@ -447,8 +485,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                 <div>
                   <label className="mb-1 block text-xs font-medium text-[#44413C]">ملاحظات إضافية (اختياري)</label>
                   <input
+                    autoComplete="off"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
+                    onKeyDown={preventEnterSubmit}
                     placeholder="وقت التوصيل المفضل أو أي تعليمات"
                     className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
                   />
@@ -501,6 +541,14 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                   <span>تواصل معنا عبر تيليجرام لمتابعة الطلب</span>
                 </a>
               )}
+
+              <button
+                type="button"
+                onClick={handleClose}
+                className="w-full rounded-lg border border-[#E5E2DC] bg-white py-2.5 text-sm font-semibold text-[#141413] hover:bg-[#FAF9F6] cursor-pointer"
+              >
+                إغلاق والعودة للمتجر
+              </button>
             </div>
           )}
         </div>
@@ -541,14 +589,20 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
 
             {step === 'cart' ? (
               <button
+                key="cart-proceed-btn"
                 type="button"
-                onClick={() => setStep('checkout')}
+                onClick={() => {
+                  checkoutEnteredAtRef.current = Date.now();
+                  setErrorMsg('');
+                  setStep('checkout');
+                }}
                 className="w-full rounded-lg bg-[#141413] py-3 text-sm font-semibold text-white hover:bg-[#2A2A28] transition-colors cursor-pointer"
               >
                 المتابعة لإتمام الطلب
               </button>
             ) : (
               <button
+                key="checkout-submit-btn"
                 type="submit"
                 form="checkout-form"
                 disabled={submitting}
