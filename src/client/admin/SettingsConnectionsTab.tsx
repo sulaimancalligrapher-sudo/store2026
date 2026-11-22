@@ -342,6 +342,7 @@ export const BACKEND_CONFIG = {
   sheetsMode: '${appsScriptUrl.trim() ? 'apps_script' : sheetsMode}' as SheetsConnectionMode,
   appsScriptUrl: '${appsScriptUrl.trim() || 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec'}',
   adminUsername: '${credNewUser.trim() || integrationStatus.adminUsername || 'admin'}',
+  adminPasscode: '123456',
 };`;
 
   const copyBackendConfigSnippet = () => {
@@ -949,9 +950,9 @@ export const BACKEND_CONFIG = {
             <Database className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-[#141413]">هيكل أوراق Google Sheets المعتمد (7 أوراق)</h2>
+            <h2 className="text-lg font-bold text-[#141413]">هيكل أوراق Google Sheets المعتمد (8 أوراق)</h2>
             <p className="text-xs text-[#6E6A63]">
-              يمكنك استعراض أعمدة كل ورقة هنا، أو الضغط على زر التهيئة التلقائية بالأعلى لإنشائها دفعة واحدة.
+              تشمل أوراق المتجر الـ 7 بالإضافة إلى ورقة <span className="font-mono-num font-semibold">Admin</span> لتسجيل بيانات دخول الإدارة. اضغط التهيئة التلقائية بالأعلى لإنشائها دفعة واحدة.
             </p>
           </div>
         </div>
@@ -1060,10 +1061,10 @@ export const BACKEND_CONFIG = {
                 <label className="mb-1 block text-xs font-medium text-[#44413C]">رقم التسجيل الجديد (اتركه فارغاً للإبقاء على الحالي)</label>
                 <input
                   type="password"
-                  minLength={6}
+                  minLength={4}
                   value={credNewPass}
                   onChange={(e) => setCredNewPass(e.target.value)}
-                  placeholder="6 أحرف أو أرقام فأكثر"
+                  placeholder="4 أحرف أو أرقام فأكثر"
                   className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
                 />
               </div>
@@ -1078,14 +1079,16 @@ export const BACKEND_CONFIG = {
                   {credFeedback.text}
                 </span>
               ) : (
-                <span />
+                <span className="text-[11px] text-[#6E6A63]">
+                  يُحفظ اسم المستخدم ورقم التسجيل في ورقة <span className="font-mono-num">Admin</span> داخل Google Sheets.
+                </span>
               )}
               <button
                 type="submit"
                 disabled={busy}
                 className="rounded-lg bg-[#141413] px-5 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] disabled:opacity-60 cursor-pointer"
               >
-                حفظ بيانات الدخول في الشيت
+                حفظ بيانات الدخول في ورقة Admin
               </button>
             </div>
           </div>

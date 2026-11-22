@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   DEFAULT_BANNERS,
   DEFAULT_CATEGORIES,
@@ -46,34 +48,121 @@ export interface RuntimeIntegrations {
   telegramWebhookSecret: string;
 }
 
+const RUNTIME_FILE_PATH = path.resolve(process.cwd(), '.nukhba-runtime.json');
+
+interface PersistedRuntimeFile {
+  sheetsMode?: SheetsConnectionMode;
+  appsScriptUrl?: string;
+  appsScriptSecret?: string;
+  sheetId?: string;
+  serviceAccountEmail?: string;
+  serviceAccountPrivateKey?: string;
+  telegramBotToken?: string;
+  telegramAdminChatId?: string;
+  telegramWebhookSecret?: string;
+  sessionSecret?: string;
+}
+
+function readPersistedRuntimeFile(): PersistedRuntimeFile {
+  try {
+    if (fs.existsSync(RUNTIME_FILE_PATH)) {
+      const raw = fs.readFileSync(RUNTIME_FILE_PATH, 'utf8');
+      const parsed = JSON.parse(raw) as PersistedRuntimeFile;
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // Ignore read errors (e.g. serverless or corrupted temp file)
+  }
+  return {};
+}
+
+const persistedOnDisk = readPersistedRuntimeFile();
+let persistedSessionSecret = persistedOnDisk.sessionSecret || '';
+
+function writePersistedRuntimeFile(): void {
+  try {
+    const payload: PersistedRuntimeFile = {
+      sheetsMode: runtimeConfig.sheetsMode,
+      appsScriptUrl: runtimeConfig.appsScriptUrl,
+      appsScriptSecret: runtimeConfig.appsScriptSecret,
+      sheetId: runtimeConfig.sheetId,
+      serviceAccountEmail: runtimeConfig.serviceAccountEmail,
+      serviceAccountPrivateKey: runtimeConfig.serviceAccountPrivateKey,
+      telegramBotToken: runtimeConfig.telegramBotToken,
+      telegramAdminChatId: runtimeConfig.telegramAdminChatId,
+      telegramWebhookSecret: runtimeConfig.telegramWebhookSecret,
+      sessionSecret: persistedSessionSecret,
+    };
+    fs.writeFileSync(RUNTIME_FILE_PATH, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+  } catch {
+    // Ignore write errors on read-only filesystems (e.g. Vercel serverless)
+  }
+}
+
+export function getOrCreateLocalSessionSecret(): string {
+  if (persistedSessionSecret) return persistedSessionSecret;
+  try {
+    const generated = crypto.randomBytes(32).toString('hex');
+    persistedSessionSecret = generated;
+    writePersistedRuntimeFile();
+    if (fs.existsSync(RUNTIME_FILE_PATH)) {
+      return persistedSessionSecret;
+    }
+  } catch {
+    // Read-only filesystem
+  }
+  return '';
+}
+
 const initialAppsScriptUrl =
-  process.env.GOOGLE_APPS_SCRIPT_URL?.trim() || BACKEND_CONFIG.appsScriptUrl.trim() || '';
+  process.env.GOOGLE_APPS_SCRIPT_URL?.trim() ||
+  persistedOnDisk.appsScriptUrl?.trim() ||
+  BACKEND_CONFIG.appsScriptUrl.trim() ||
+  '';
+
+const initialSheetId =
+  process.env.GOOGLE_SHEET_ID?.trim() || persistedOnDisk.sheetId?.trim() || '';
+const initialServiceAccountEmail =
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || persistedOnDisk.serviceAccountEmail?.trim() || '';
 
 const runtimeConfig: RuntimeIntegrations = {
   sheetsMode:
     (process.env.GOOGLE_SHEETS_MODE as SheetsConnectionMode) ||
+    persistedOnDisk.sheetsMode ||
     (initialAppsScriptUrl
       ? 'apps_script'
-      : process.env.GOOGLE_SHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+      : initialSheetId && initialServiceAccountEmail
         ? 'service_account'
         : BACKEND_CONFIG.sheetsMode || 'demo'),
   appsScriptUrl: initialAppsScriptUrl,
-  appsScriptSecret: process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || '',
-  sheetId: process.env.GOOGLE_SHEET_ID?.trim() || '',
-  serviceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || '',
-  serviceAccountPrivateKey: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim(),
-  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() || '',
-  telegramAdminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() || '',
-  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || '',
+  appsScriptSecret:
+    process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || persistedOnDisk.appsScriptSecret?.trim() || '',
+  sheetId: initialSheetId,
+  serviceAccountEmail: initialServiceAccountEmail,
+  serviceAccountPrivateKey: (
+    process.env.GOOGLE_PRIVATE_KEY ||
+    persistedOnDisk.serviceAccountPrivateKey ||
+    ''
+  )
+    .replace(/\\n/g, '\n')
+    .trim(),
+  telegramBotToken:
+    process.env.TELEGRAM_BOT_TOKEN?.trim() || persistedOnDisk.telegramBotToken?.trim() || '',
+  telegramAdminChatId:
+    process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() || persistedOnDisk.telegramAdminChatId?.trim() || '',
+  telegramWebhookSecret:
+    process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || persistedOnDisk.telegramWebhookSecret?.trim() || '',
 };
 
 export interface PersistedAdminAuth {
   username: string;
-  hash: string;
-  salt: string;
+  hash?: string;
+  salt?: string;
+  plainPasscode?: string;
 }
 
-let persistedMemoryAuth: PersistedAdminAuth | null = null;
+let persistedDemoAuth: PersistedAdminAuth | null = null;
+let persistedSheetAuthCache: { auth: PersistedAdminAuth; expiresAt: number } | null = null;
 
 const memoryStore: StoreSnapshot = {
   settings: { ...DEFAULT_SETTINGS },
@@ -92,6 +181,7 @@ let cachedGoogleToken: { token: string; expiresAt: number } | null = null;
 
 export function invalidateCache(): void {
   snapshotCache = null;
+  persistedSheetAuthCache = null;
 }
 
 export function getRuntimeConfig(): RuntimeIntegrations {
@@ -179,6 +269,7 @@ export function updateRuntimeConfig(partial: {
     runtimeConfig.sheetsMode = partial.sheetsMode;
   }
 
+  writePersistedRuntimeFile();
   invalidateCache();
   return { ok: true };
 }
@@ -477,6 +568,14 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
       ]),
     ];
   }
+  if (tabName === 'Admin') {
+    const activeUser = persistedDemoAuth?.username || BACKEND_CONFIG.adminUsername || 'admin';
+    const activePass =
+      persistedDemoAuth?.hash && persistedDemoAuth?.salt
+        ? `scrypt:${persistedDemoAuth.salt}:${persistedDemoAuth.hash}`
+        : persistedDemoAuth?.plainPasscode || BACKEND_CONFIG.adminPasscode || '123456';
+    return [header, ['adm_1', activeUser, activePass, 'admin', 'TRUE', new Date().toISOString()]];
+  }
   return [header];
 }
 
@@ -691,25 +790,63 @@ export async function getSnapshot(forceFresh = false): Promise<StoreSnapshot> {
   return data;
 }
 
-export async function getPersistedAdminAuthFromSheets(): Promise<PersistedAdminAuth | null> {
-  if (persistedMemoryAuth) return persistedMemoryAuth;
+export async function getPersistedAdminAuthFromSheets(forceFresh = false): Promise<PersistedAdminAuth | null> {
+  if (runtimeConfig.sheetsMode === 'demo') {
+    return persistedDemoAuth;
+  }
+
+  if (!forceFresh && persistedSheetAuthCache && persistedSheetAuthCache.expiresAt > Date.now()) {
+    return persistedSheetAuthCache.auth;
+  }
 
   try {
-    let settingsRows: Record<string, string>[] = [];
+    let rawTabs: Record<string, string[][]> = {};
     if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-      const rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
-      settingsRows = parseRowObjects(rawTabs.Settings || []);
+      rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
     } else if (
       runtimeConfig.sheetsMode === 'service_account' &&
       runtimeConfig.sheetId &&
       runtimeConfig.serviceAccountEmail
     ) {
-      const rawTabs = await fetchServiceAccountAllTabs();
-      settingsRows = parseRowObjects(rawTabs.Settings || []);
+      rawTabs = await fetchServiceAccountAllTabs();
     } else {
       return null;
     }
 
+    // 1. Prefer dedicated 'Admin' sheet tab
+    const adminRows = parseRowObjects(rawTabs.Admin || []);
+    const activeAdmin = adminRows.find(
+      (r) => toBool(r.is_active, true) && String(r.username || '').trim() && String(r.passcode || '').trim()
+    );
+    if (activeAdmin) {
+      const rawPass = String(activeAdmin.passcode).trim();
+      let parsedAuth: PersistedAdminAuth;
+      if (rawPass.startsWith('scrypt:')) {
+        const parts = rawPass.split(':');
+        if (parts.length === 3 && parts[1] && parts[2]) {
+          parsedAuth = {
+            username: String(activeAdmin.username).trim(),
+            salt: parts[1],
+            hash: parts[2],
+          };
+        } else {
+          parsedAuth = {
+            username: String(activeAdmin.username).trim(),
+            plainPasscode: rawPass,
+          };
+        }
+      } else {
+        parsedAuth = {
+          username: String(activeAdmin.username).trim(),
+          plainPasscode: rawPass,
+        };
+      }
+      persistedSheetAuthCache = { auth: parsedAuth, expiresAt: Date.now() + CACHE_TTL_MS };
+      return parsedAuth;
+    }
+
+    // 2. Fallback to legacy __admin_* keys in Settings sheet
+    const settingsRows = parseRowObjects(rawTabs.Settings || []);
     const map: Record<string, string> = {};
     for (const r of settingsRows) {
       if (r.key && r.key.startsWith('__admin_')) {
@@ -717,12 +854,13 @@ export async function getPersistedAdminAuthFromSheets(): Promise<PersistedAdminA
       }
     }
     if (map.__admin_password_hash && map.__admin_password_salt) {
-      persistedMemoryAuth = {
+      const legacyAuth: PersistedAdminAuth = {
         username: map.__admin_username || BACKEND_CONFIG.adminUsername || 'admin',
         hash: map.__admin_password_hash,
         salt: map.__admin_password_salt,
       };
-      return persistedMemoryAuth;
+      persistedSheetAuthCache = { auth: legacyAuth, expiresAt: Date.now() + CACHE_TTL_MS };
+      return legacyAuth;
     }
   } catch {
     // Ignore transient sheet read failures during auth check
@@ -731,24 +869,31 @@ export async function getPersistedAdminAuthFromSheets(): Promise<PersistedAdminA
 }
 
 export async function savePersistedAdminAuthToSheets(auth: PersistedAdminAuth): Promise<void> {
-  persistedMemoryAuth = auth;
-  const rows = [
-    { key: '__admin_username', value: auth.username, label: 'اسم المستخدم الإداري' },
-    { key: '__admin_password_hash', value: auth.hash, label: 'بيانات التحقق الإدارية' },
-    { key: '__admin_password_salt', value: auth.salt, label: 'معرف التحقق الإداري' },
-  ];
+  if (runtimeConfig.sheetsMode === 'demo') {
+    persistedDemoAuth = auth;
+    return;
+  }
+
+  persistedSheetAuthCache = { auth, expiresAt: Date.now() + CACHE_TTL_MS };
+  const serializedPasscode =
+    auth.hash && auth.salt ? `scrypt:${auth.salt}:${auth.hash}` : auth.plainPasscode || '';
+
+  const adminRow = {
+    id: 'adm_1',
+    username: auth.username,
+    passcode: serializedPasscode,
+    role: 'admin',
+    is_active: 'TRUE',
+    updated_at: new Date().toISOString(),
+  };
 
   if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    for (const row of rows) {
-      await callAppsScript('upsert', { tab: 'Settings', keyField: 'key', row });
-    }
+    await callAppsScript('upsert', { tab: 'Admin', keyField: 'id', row: adminRow });
     return;
   }
 
   if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
-    for (const row of rows) {
-      await upsertRowServiceAccount('Settings', 'key', row);
-    }
+    await upsertRowServiceAccount('Admin', 'id', adminRow);
   }
 }
 
@@ -825,7 +970,7 @@ export async function initializeSheetsStructure(seedSampleData = true): Promise<
 
   if (runtimeConfig.sheetsMode === 'apps_script') {
     await callAppsScript('init', { tabs: tabsPayload, seedSampleData });
-    return { ok: true, message: 'تم إنشاء الأوراق السبع وتعبئة العناوين والبيانات بنجاح عبر Apps Script.' };
+    return { ok: true, message: 'تم إنشاء الأوراق الثماني (بما فيها ورقة Admin) وتعبئة العناوين والبيانات بنجاح عبر Apps Script.' };
   }
 
   const token = await getServiceAccountToken();
@@ -863,7 +1008,7 @@ export async function initializeSheetsStructure(seedSampleData = true): Promise<
     }),
   });
 
-  return { ok: true, message: 'تمت تهيئة جميع أوراق الشيت (7 أوراق) وإدراج البيانات بنجاح!' };
+  return { ok: true, message: 'تمت تهيئة جميع أوراق الشيت (8 أوراق بما فيها ورقة Admin) وإدراج البيانات بنجاح!' };
 }
 
 function serializeEntityRow(tabName: string, entity: unknown): Record<string, string> {

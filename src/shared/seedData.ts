@@ -348,4 +348,17 @@ export const SHEET_SCHEMA_TABS: SheetSchemaTab[] = [
       { name: 'notes', type: 'نص', note: 'ملاحظات' },
     ],
   },
+  {
+    tabName: 'Admin',
+    titleAr: 'بيانات دخول الإدارة',
+    descriptionAr: 'حساب دخول لوحة التحكم (/admin): اسم المستخدم ورقم التسجيل الإداري الافتراضي والمخصص.',
+    columns: [
+      { name: 'id', type: 'نص فريد', note: 'معرف الحساب (adm_1)' },
+      { name: 'username', type: 'نص', note: 'اسم المستخدم (الافتراضي admin)' },
+      { name: 'passcode', type: 'نص/مشفّر', note: 'رقم التسجيل الخاص بالإدارة (الافتراضي 123456)' },
+      { name: 'role', type: 'نص', note: 'الصلاحية (admin)' },
+      { name: 'is_active', type: 'TRUE/FALSE', note: 'حالة الحساب' },
+      { name: 'updated_at', type: 'ISO Date', note: 'تاريخ آخر تحديث' },
+    ],
+  },
 ];

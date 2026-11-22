@@ -151,10 +151,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   type="button"
                   disabled={outOfStock}
                   onClick={handleAdd}
-                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-[#141413] px-5 py-3 text-sm font-semibold text-white hover:bg-[#2A2A28] disabled:bg-[#D4CFC7] disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  aria-label={outOfStock ? 'غير متوفر حالياً' : 'أضف إلى السلة'}
+                  title={outOfStock ? 'غير متوفر حالياً' : 'أضف إلى السلة'}
+                  className="flex-1 inline-flex items-center justify-center rounded-lg bg-[#141413] px-5 py-3 text-white hover:bg-[#2A2A28] disabled:bg-[#D4CFC7] disabled:cursor-not-allowed transition-colors cursor-pointer"
                 >
-                  <ShoppingBag className="h-4 w-4" />
-                  <span>{outOfStock ? 'غير متوفر حالياً' : 'أضف إلى السلة'}</span>
+                  <ShoppingBag className="h-5 w-5" />
                 </button>
 
                 <button

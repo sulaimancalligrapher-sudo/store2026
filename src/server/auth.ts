@@ -1,14 +1,16 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { BACKEND_CONFIG } from './backendConfig.ts';
-import { getPersistedAdminAuthFromSheets, savePersistedAdminAuthToSheets } from './sheetsAdapter.ts';
+import {
+  getOrCreateLocalSessionSecret,
+  getPersistedAdminAuthFromSheets,
+  savePersistedAdminAuthToSheets,
+  type PersistedAdminAuth,
+} from './sheetsAdapter.ts';
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-const fallbackRandomSecret = crypto.randomBytes(32).toString('hex');
 
-let claimedUsername: string | null = null;
-let claimedPasswordHash: string | null = null;
-let claimedPasswordSalt: string | null = null;
+let activePersistedAuth: PersistedAdminAuth | null = null;
 
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -26,33 +28,31 @@ function getSessionSecret(): string {
     return crypto.createHmac('sha256', 'nukhba-serverless-session-key').update(envPass).digest('hex');
   }
 
-  if (claimedPasswordHash && claimedPasswordSalt) {
-    return crypto
-      .createHmac('sha256', 'nukhba-claimed-session-key')
-      .update(`${claimedPasswordHash}:${claimedPasswordSalt}`)
-      .digest('hex');
-  }
+  const localSecret = getOrCreateLocalSessionSecret();
+  if (localSecret) return localSecret;
 
-  return fallbackRandomSecret;
+  return crypto
+    .createHmac('sha256', 'nukhba-default-session-key')
+    .update(`${BACKEND_CONFIG.adminUsername}:${BACKEND_CONFIG.adminPasscode}`)
+    .digest('hex');
 }
 
 export function getActiveAdminUsername(): string {
   return (
     process.env.ADMIN_USERNAME?.trim() ||
-    claimedUsername ||
+    activePersistedAuth?.username ||
     BACKEND_CONFIG.adminUsername.trim() ||
     'admin'
   );
 }
 
-export async function ensurePersistedAuthLoaded(): Promise<void> {
+export async function ensurePersistedAuthLoaded(forceFresh = false): Promise<void> {
   if (process.env.ADMIN_PASSWORD?.trim()) return;
-  if (claimedPasswordHash && claimedPasswordSalt) return;
-  const persisted = await getPersistedAdminAuthFromSheets();
+  const persisted = await getPersistedAdminAuthFromSheets(forceFresh);
   if (persisted) {
-    claimedUsername = persisted.username || BACKEND_CONFIG.adminUsername.trim() || 'admin';
-    claimedPasswordHash = persisted.hash;
-    claimedPasswordSalt = persisted.salt;
+    activePersistedAuth = persisted;
+  } else if (forceFresh) {
+    activePersistedAuth = null;
   }
 }
 
@@ -60,43 +60,52 @@ export function getAuthSetupState() {
   const hasEnvPassword = Boolean(process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.trim().length > 0);
   return {
     hasEnvAdminPassword: hasEnvPassword,
-    hasClaimedAdminPassword: Boolean(claimedPasswordHash),
-    needsInitialSetup: !hasEnvPassword && !claimedPasswordHash,
+    hasClaimedAdminPassword: Boolean(activePersistedAuth),
+    needsInitialSetup: false,
     defaultUsername: getActiveAdminUsername(),
   };
+}
+
+function verifyPasscodeAgainstSource(password: string, persisted: PersistedAdminAuth | null): boolean {
+  const cleanPass = password.trim();
+  if (!cleanPass) return false;
+
+  if (persisted?.hash && persisted?.salt) {
+    const candidate = crypto.scryptSync(cleanPass, persisted.salt, 64).toString('hex');
+    return safeEqual(candidate, persisted.hash);
+  }
+  if (persisted?.plainPasscode) {
+    return safeEqual(cleanPass, persisted.plainPasscode.trim());
+  }
+  return safeEqual(cleanPass, (BACKEND_CONFIG.adminPasscode || '123456').trim());
 }
 
 export async function claimInitialAdminPassword(
   username: string,
   password: string
 ): Promise<{ ok: boolean; error?: string }> {
-  await ensurePersistedAuthLoaded();
+  await ensurePersistedAuthLoaded(true);
   const envPass = process.env.ADMIN_PASSWORD?.trim();
   if (envPass) {
     return { ok: false, error: 'بيانات الإدارة محددة بالفعل في متغيرات البيئة (ADMIN_PASSWORD).' };
-  }
-  if (claimedPasswordHash) {
-    return { ok: false, error: 'تم إعداد حساب الإدارة مسبقاً.' };
   }
   const cleanUser = (username || getActiveAdminUsername()).trim();
   if (cleanUser.length < 2) {
     return { ok: false, error: 'يجب أن يتكون اسم المستخدم من حرفين على الأقل.' };
   }
-  if (!password || password.trim().length < 6) {
-    return { ok: false, error: 'يجب أن يتكون رقم التسجيل / كلمة المرور من 6 أحرف أو أرقام على الأقل.' };
+  if (!password || password.trim().length < 4) {
+    return { ok: false, error: 'يجب أن يتكون رقم التسجيل / كلمة المرور من 4 أحرف أو أرقام على الأقل.' };
   }
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password.trim(), salt, 64).toString('hex');
-  claimedUsername = cleanUser;
-  claimedPasswordSalt = salt;
-  claimedPasswordHash = hash;
-  await savePersistedAdminAuthToSheets({ username: cleanUser, hash, salt });
+  activePersistedAuth = { username: cleanUser, hash, salt };
+  await savePersistedAdminAuthToSheets(activePersistedAuth);
   return { ok: true };
 }
 
 export async function verifyAdminCredentials(username: string, password: string): Promise<boolean> {
   if (!password) return false;
-  await ensurePersistedAuthLoaded();
+  await ensurePersistedAuthLoaded(true);
 
   const expectedUsername = getActiveAdminUsername().toLowerCase();
   const providedUsername = (username || '').trim().toLowerCase();
@@ -108,11 +117,7 @@ export async function verifyAdminCredentials(username: string, password: string)
   if (envPass) {
     return safeEqual(password, envPass);
   }
-  if (claimedPasswordHash && claimedPasswordSalt) {
-    const candidate = crypto.scryptSync(password, claimedPasswordSalt, 64).toString('hex');
-    return safeEqual(candidate, claimedPasswordHash);
-  }
-  return false;
+  return verifyPasscodeAgainstSource(password, activePersistedAuth);
 }
 
 export async function updateAdminCredentials(
@@ -120,7 +125,7 @@ export async function updateAdminCredentials(
   newUsername: string,
   newPassword: string
 ): Promise<{ ok: boolean; error?: string }> {
-  await ensurePersistedAuthLoaded();
+  await ensurePersistedAuthLoaded(true);
   const envPass = process.env.ADMIN_PASSWORD?.trim();
   if (envPass) {
     return {
@@ -128,11 +133,8 @@ export async function updateAdminCredentials(
       error: 'كلمة المرور محمية عبر متغير البيئة ADMIN_PASSWORD؛ لتغييرها عدّلها من إعدادات البيئة في Vercel.',
     };
   }
-  if (!claimedPasswordHash || !claimedPasswordSalt) {
-    return { ok: false, error: 'لم يتم إعداد حساب الإدارة بعد.' };
-  }
-  const currentCheck = crypto.scryptSync(currentPassword || '', claimedPasswordSalt, 64).toString('hex');
-  if (!safeEqual(currentCheck, claimedPasswordHash)) {
+
+  if (!verifyPasscodeAgainstSource(currentPassword || '', activePersistedAuth)) {
     return { ok: false, error: 'رقم التسجيل الحالي غير صحيح.' };
   }
 
@@ -141,20 +143,22 @@ export async function updateAdminCredentials(
     return { ok: false, error: 'يجب أن يتكون اسم المستخدم من حرفين على الأقل.' };
   }
 
-  let nextHash = claimedPasswordHash;
-  let nextSalt = claimedPasswordSalt;
+  let nextSalt = activePersistedAuth?.salt;
+  let nextHash = activePersistedAuth?.hash;
+
   if (newPassword.trim()) {
-    if (newPassword.trim().length < 6) {
-      return { ok: false, error: 'رقم التسجيل الجديد يجب أن يكون 6 أحرف أو أرقام على الأقل.' };
+    if (newPassword.trim().length < 4) {
+      return { ok: false, error: 'رقم التسجيل الجديد يجب أن يكون 4 أحرف أو أرقام على الأقل.' };
     }
     nextSalt = crypto.randomBytes(16).toString('hex');
     nextHash = crypto.scryptSync(newPassword.trim(), nextSalt, 64).toString('hex');
+  } else if (!nextSalt || !nextHash) {
+    nextSalt = crypto.randomBytes(16).toString('hex');
+    nextHash = crypto.scryptSync(currentPassword.trim(), nextSalt, 64).toString('hex');
   }
 
-  claimedUsername = cleanUser;
-  claimedPasswordSalt = nextSalt;
-  claimedPasswordHash = nextHash;
-  await savePersistedAdminAuthToSheets({ username: cleanUser, hash: nextHash, salt: nextSalt });
+  activePersistedAuth = { username: cleanUser, hash: nextHash, salt: nextSalt };
+  await savePersistedAdminAuthToSheets(activePersistedAuth);
   return { ok: true };
 }
 
@@ -189,7 +193,7 @@ export function verifyAdminToken(token: string | undefined | null): boolean {
 }
 
 export async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
-  await ensurePersistedAuthLoaded();
+  await ensurePersistedAuthLoaded(false);
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
   if (!verifyAdminToken(token)) {

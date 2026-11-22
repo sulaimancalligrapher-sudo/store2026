@@ -70,12 +70,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Category quick form
   const [catName, setCatName] = useState('');
-  const [catImage, setCatImage] = useState('/src/assets/images/product_wireless_headphones_1795253790126.jpg');
+  const [catImage, setCatImage] = useState('');
 
   // Banner quick form
   const [banTitle, setBanTitle] = useState('');
   const [banSubtitle, setBanSubtitle] = useState('');
-  const [banImage, setBanImage] = useState('/src/assets/images/hero_nukhba_banner_1795253789582.jpg');
+  const [banImage, setBanImage] = useState('');
 
   // City quick form
   const [editingCityId, setEditingCityId] = useState<string | null>(null);
@@ -192,13 +192,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <Lock className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-[#141413]">
-                {needsInitialSetup ? 'تفعيل حساب الإدارة لأول مرة' : 'بوابة دخول الإدارة'}
-              </h1>
+              <h1 className="text-xl font-bold text-[#141413]">بوابة دخول الإدارة</h1>
               <p className="text-xs text-[#6E6A63]">
-                {needsInitialSetup
-                  ? 'عيّن اسم المستخدم ورقم التسجيل الخاص بك لتأمين لوحة التحكم.'
-                  : 'أدخل اسم المستخدم ورقم التسجيل لفتح لوحة إدارة المتجر.'}
+                أدخل اسم المستخدم ورقم التسجيل الخاص بالإدارة لفتح لوحة التحكم.
               </p>
             </div>
           </div>
@@ -219,7 +215,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               )}
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-[#44413C]">
-                  اسم المستخدم (الافتراضي: <span className="font-mono-num font-semibold">admin</span>)
+                  اسم المستخدم الإداري
                 </label>
                 <input
                   required
@@ -232,12 +228,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-[#44413C]">
-                  {needsInitialSetup ? 'اختر رقم التسجيل / كلمة المرور (6 أحرف أو أرقام فأكثر)' : 'رقم التسجيل / كلمة المرور'}
+                  رقم التسجيل / كلمة المرور
                 </label>
                 <input
                   required
                   type="password"
-                  minLength={needsInitialSetup ? 6 : 1}
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
                   placeholder="••••••••"
@@ -249,14 +244,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 disabled={authBusy}
                 className="w-full rounded-lg bg-[#141413] py-2.5 text-sm font-semibold text-white hover:bg-[#2A2A28] disabled:opacity-60 cursor-pointer"
               >
-                {authBusy ? 'جاري التحقق...' : needsInitialSetup ? 'تثبيت بيانات الدخول وفتح اللوحة' : 'تسجيل الدخول'}
+                {authBusy ? 'جاري التحقق...' : 'تسجيل الدخول'}
               </button>
               <div className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-3 text-[11px] text-[#44413C] leading-relaxed space-y-1">
                 <p>
-                  <strong>آلية الحساب:</strong> اسم المستخدم الافتراضي هو <span className="font-mono-num font-semibold">admin</span>، وعند تفعيل رقم التسجيل لأول مرة يُحفظ مشفراً في ورقة <span className="font-mono-num">Settings</span> داخل Google Sheets (عند ربط الشيت) أو في الخادم.
-                </p>
-                <p>
-                  كما يمكنك دائماً تعديل الاسم والرقم من متغيرات البيئة <span className="font-mono-num">ADMIN_USERNAME</span> و <span className="font-mono-num">ADMIN_PASSWORD</span>.
+                  <strong>بيانات الدخول الافتراضية الجاهزة:</strong> اسم المستخدم{' '}
+                  <span className="font-mono-num font-semibold text-[#141413]">admin</span> · رقم التسجيل{' '}
+                  <span className="font-mono-num font-semibold text-[#141413]">123456</span> (إلا إذا تم تعديلهما من ورقة{' '}
+                  <span className="font-mono-num font-semibold">Admin</span> في Google Sheets أو من تبويب الإعدادات).
                 </p>
               </div>
             </form>
@@ -1303,6 +1298,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 setEditingProduct(undefined);
                 handleSessionExpired('انتهت جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
                 return;
+              }
+              throw err;
+            }
+          }}
+          onCreateCategory={async (catTitle) => {
+            try {
+              const res = await api.saveCategory({
+                name: catTitle,
+                image_url: '',
+                sort_order: data.categories.length + 1,
+              });
+              await refreshAll();
+              return res.category;
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) {
+                setEditingProduct(undefined);
+                handleSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
+              }
+              throw err;
+            }
+          }}
+          onDeleteCategory={async (catId) => {
+            try {
+              await api.deleteCategory(catId);
+              await refreshAll();
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) {
+                setEditingProduct(undefined);
+                handleSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
               }
               throw err;
             }

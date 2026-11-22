@@ -256,10 +256,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         type="button"
                         disabled={outOfStock}
                         onClick={() => onQuickAdd(product)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#141413] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] disabled:bg-[#D4CFC7] disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        aria-label={outOfStock ? 'نفد المخزون' : 'أضف إلى السلة'}
+                        title={outOfStock ? 'نفد المخزون' : 'أضف إلى السلة'}
+                        className="inline-flex items-center justify-center rounded-lg bg-[#141413] p-2.5 text-white hover:bg-[#2A2A28] disabled:bg-[#D4CFC7] disabled:cursor-not-allowed transition-colors shrink-0 cursor-pointer"
                       >
-                        <ShoppingBag className="h-3.5 w-3.5" />
-                        <span>{outOfStock ? 'نفد' : 'أضف للسلة'}</span>
+                        <ShoppingBag className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
