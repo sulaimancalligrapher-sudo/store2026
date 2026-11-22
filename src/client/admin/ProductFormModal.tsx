@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import type { Category, Product } from '../../shared/types.ts';
+import { extractGoogleDriveFileId } from '../../shared/imageUrl.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 
 const PRESET_IMAGES = [
@@ -183,9 +184,18 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                 required
                 value={imageUrl}
                 onChange={(e) => setImageUrl(e.target.value)}
-                placeholder="https://... أو /src/assets/images/..."
+                placeholder="https://drive.google.com/file/d/.../view?usp=sharing أو رابط صورة مباشر"
                 className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:bg-white focus:outline-none"
               />
+              {extractGoogleDriveFileId(imageUrl) ? (
+                <p className="text-[11px] font-medium text-emerald-700">
+                  ✓ تم التعرف على رابط Google Drive وسيتم تحويله وعرضه تلقائياً (تأكد أن المشاركة «أي شخص لديه الرابط»).
+                </p>
+              ) : (
+                <p className="text-[11px] text-[#6E6A63]">
+                  يقبل الروابط المباشرة أو روابط مشاركة Google Drive بصلاحية «أي شخص لديه الرابط».
+                </p>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {PRESET_IMAGES.map((preset) => (
                   <button
@@ -223,9 +233,10 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
               <input
                 value={galleryText}
                 onChange={(e) => setGalleryText(e.target.value)}
-                placeholder="https://..., https://..."
+                placeholder="https://drive.google.com/file/d/.../view?usp=sharing, https://..."
                 className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
               />
+              <p className="mt-1 text-[11px] text-[#6E6A63]">يدعم روابط Google Drive أو الروابط المباشرة مفصولة بفاصلة.</p>
             </div>
           </div>
 

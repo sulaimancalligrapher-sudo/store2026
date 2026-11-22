@@ -129,6 +129,8 @@ export interface IntegrationStatus {
   telegramWebhookSecretConfigured: boolean;
   hasEnvAdminPassword: boolean;
   hasClaimedAdminPassword: boolean;
+  adminUsername: string;
+  hasFileAppsScriptUrl: boolean;
 }
 
 export interface SheetSchemaTab {

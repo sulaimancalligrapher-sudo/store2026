@@ -200,6 +200,20 @@ export default function App() {
 
   if (!storeData) return null;
 
+  if (route === 'admin') {
+    return (
+      <div className="min-h-screen bg-[#FAF9F6] text-[#141413]">
+        <AdminPanel
+          token={adminToken}
+          onTokenChange={setAdminToken}
+          onCatalogUpdated={fetchBootstrap}
+          onBackToStore={() => navigate('shop')}
+        />
+        <OfflineIndicator />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FAF9F6] text-[#141413]">
       {/* Slim Dismissible Announcement Bar */}
@@ -258,15 +272,6 @@ export default function App() {
             >
               طلباتي
             </button>
-            <button
-              type="button"
-              onClick={() => navigate('admin')}
-              className={`hover:text-[#141413] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                route === 'admin' ? 'text-[#141413] underline underline-offset-8' : ''
-              }`}
-            >
-              لوحة التحكم
-            </button>
           </nav>
 
           {/* Zone 3: 1 primary action */}
@@ -299,13 +304,6 @@ export default function App() {
           >
             طلباتي
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('admin')}
-            className={`px-2 py-1 whitespace-nowrap ${route === 'admin' ? 'text-[#141413]' : ''}`}
-          >
-            لوحة التحكم والإعدادات
-          </button>
         </div>
       </header>
 
@@ -328,14 +326,6 @@ export default function App() {
             onUpdateSavedOrder={upsertSavedOrder}
           />
         )}
-
-        {route === 'admin' && (
-          <AdminPanel
-            token={adminToken}
-            onTokenChange={setAdminToken}
-            onCatalogUpdated={fetchBootstrap}
-          />
-        )}
       </main>
 
       {/* Clean Footer */}
@@ -350,9 +340,6 @@ export default function App() {
             </button>
             <button type="button" onClick={() => navigate('orders')} className="hover:text-[#141413] cursor-pointer">
               تتبع الطلب
-            </button>
-            <button type="button" onClick={() => navigate('admin')} className="hover:text-[#141413] cursor-pointer">
-              الإدارة والربط
             </button>
           </div>
         </div>

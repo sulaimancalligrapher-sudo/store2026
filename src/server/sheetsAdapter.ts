@@ -21,6 +21,8 @@ import type {
   StoreSettings,
 } from '../shared/types.ts';
 import type { TelegramRuntimeConfig } from './telegramService.ts';
+import { normalizeImageUrl } from '../shared/imageUrl.ts';
+import { BACKEND_CONFIG } from './backendConfig.ts';
 
 export interface StoreSnapshot {
   settings: StoreSettings;
@@ -44,15 +46,18 @@ export interface RuntimeIntegrations {
   telegramWebhookSecret: string;
 }
 
+const initialAppsScriptUrl =
+  process.env.GOOGLE_APPS_SCRIPT_URL?.trim() || BACKEND_CONFIG.appsScriptUrl.trim() || '';
+
 const runtimeConfig: RuntimeIntegrations = {
   sheetsMode:
     (process.env.GOOGLE_SHEETS_MODE as SheetsConnectionMode) ||
-    (process.env.GOOGLE_APPS_SCRIPT_URL
+    (initialAppsScriptUrl
       ? 'apps_script'
       : process.env.GOOGLE_SHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
         ? 'service_account'
-        : 'demo'),
-  appsScriptUrl: process.env.GOOGLE_APPS_SCRIPT_URL?.trim() || '',
+        : BACKEND_CONFIG.sheetsMode || 'demo'),
+  appsScriptUrl: initialAppsScriptUrl,
   appsScriptSecret: process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || '',
   sheetId: process.env.GOOGLE_SHEET_ID?.trim() || '',
   serviceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || '',
@@ -61,6 +66,14 @@ const runtimeConfig: RuntimeIntegrations = {
   telegramAdminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() || '',
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || '',
 };
+
+export interface PersistedAdminAuth {
+  username: string;
+  hash: string;
+  salt: string;
+}
+
+let persistedMemoryAuth: PersistedAdminAuth | null = null;
 
 const memoryStore: StoreSnapshot = {
   settings: { ...DEFAULT_SETTINGS },
@@ -249,7 +262,7 @@ function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
     id: r.id,
     name: r.name,
     slug: r.slug || r.id,
-    image_url: r.image_url || '',
+    image_url: normalizeImageUrl(r.image_url || ''),
     sort_order: toNum(r.sort_order, 0),
     is_active: toBool(r.is_active, true),
   }));
@@ -263,8 +276,8 @@ function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
     price: toNum(r.price, 0),
     compare_at_price: r.compare_at_price ? toNum(r.compare_at_price, 0) || null : null,
     stock: toNum(r.stock, 0),
-    image_url: r.image_url || '',
-    gallery_urls: parseList(r.gallery_urls),
+    image_url: normalizeImageUrl(r.image_url || ''),
+    gallery_urls: parseList(r.gallery_urls).map(normalizeImageUrl).filter(Boolean),
     variants: parseList(r.variants),
     is_featured: toBool(r.is_featured, false),
     is_active: toBool(r.is_active, true),
@@ -275,7 +288,7 @@ function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
     id: r.id,
     title: r.title,
     subtitle: r.subtitle || '',
-    image_url: r.image_url || '',
+    image_url: normalizeImageUrl(r.image_url || ''),
     link_url: r.link_url || '#catalog',
     sort_order: toNum(r.sort_order, 0),
     is_active: toBool(r.is_active, true),
@@ -534,6 +547,9 @@ async function callAppsScript<T = Record<string, unknown>>(action: string, paylo
     throw new Error('استجابة غير متوقعة من Google Apps Script. تأكد من نشره بصلاحية Anyone.');
   }
   if (json && json.ok === false) {
+    if (json.error === 'Unauthorized secret') {
+      throw new Error('المفتاح السري (Secret Token) غير متطابق مع قيمة SECRET_TOKEN داخل كود Google Apps Script.');
+    }
     throw new Error(json.error || 'رفض Google Apps Script الطلب');
   }
   return (json.data !== undefined ? json.data : json) as T;
@@ -675,18 +691,82 @@ export async function getSnapshot(forceFresh = false): Promise<StoreSnapshot> {
   return data;
 }
 
+export async function getPersistedAdminAuthFromSheets(): Promise<PersistedAdminAuth | null> {
+  if (persistedMemoryAuth) return persistedMemoryAuth;
+
+  try {
+    let settingsRows: Record<string, string>[] = [];
+    if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
+      const rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
+      settingsRows = parseRowObjects(rawTabs.Settings || []);
+    } else if (
+      runtimeConfig.sheetsMode === 'service_account' &&
+      runtimeConfig.sheetId &&
+      runtimeConfig.serviceAccountEmail
+    ) {
+      const rawTabs = await fetchServiceAccountAllTabs();
+      settingsRows = parseRowObjects(rawTabs.Settings || []);
+    } else {
+      return null;
+    }
+
+    const map: Record<string, string> = {};
+    for (const r of settingsRows) {
+      if (r.key && r.key.startsWith('__admin_')) {
+        map[r.key] = r.value ?? '';
+      }
+    }
+    if (map.__admin_password_hash && map.__admin_password_salt) {
+      persistedMemoryAuth = {
+        username: map.__admin_username || BACKEND_CONFIG.adminUsername || 'admin',
+        hash: map.__admin_password_hash,
+        salt: map.__admin_password_salt,
+      };
+      return persistedMemoryAuth;
+    }
+  } catch {
+    // Ignore transient sheet read failures during auth check
+  }
+  return null;
+}
+
+export async function savePersistedAdminAuthToSheets(auth: PersistedAdminAuth): Promise<void> {
+  persistedMemoryAuth = auth;
+  const rows = [
+    { key: '__admin_username', value: auth.username, label: 'اسم المستخدم الإداري' },
+    { key: '__admin_password_hash', value: auth.hash, label: 'بيانات التحقق الإدارية' },
+    { key: '__admin_password_salt', value: auth.salt, label: 'معرف التحقق الإداري' },
+  ];
+
+  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
+    for (const row of rows) {
+      await callAppsScript('upsert', { tab: 'Settings', keyField: 'key', row });
+    }
+    return;
+  }
+
+  if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
+    for (const row of rows) {
+      await upsertRowServiceAccount('Settings', 'key', row);
+    }
+  }
+}
+
 export async function testSheetsConnection(): Promise<{
   ok: boolean;
   mode: SheetsConnectionMode;
+  isDemo?: boolean;
   message: string;
   tabsFound?: string[];
   productCount?: number;
 }> {
   if (runtimeConfig.sheetsMode === 'demo') {
     return {
-      ok: true,
+      ok: false,
       mode: 'demo',
-      message: 'النظام يعمل حالياً بالوضع التجريبي السريع في الذاكرة. اختر Apps Script أو Service Account للربط الفعلي بـ Google Sheets.',
+      isDemo: true,
+      message:
+        'النظام يعمل حالياً بالوضع التجريبي المؤقت (لا يحفظ في Google Sheets). اختر Google Apps Script وأدخل الرابط ثم اضغط حفظ واختبار الاتصال.',
       tabsFound: SHEET_SCHEMA_TABS.map((t) => t.tabName),
       productCount: memoryStore.products.length,
     };
@@ -732,8 +812,8 @@ export async function initializeSheetsStructure(seedSampleData = true): Promise<
 
   if (runtimeConfig.sheetsMode === 'demo') {
     return {
-      ok: true,
-      message: 'أنت في الوضع التجريبي — البيانات الأولية جاهزة بالفعل. اربط شيت Google ثم اضغط تهيئة الأوراق.',
+      ok: false,
+      message: 'النظام ما زال في الوضع التجريبي. اختر Google Apps Script وأدخل رابط Web App أولاً ثم اضغط تهيئة الأوراق.',
     };
   }
 
@@ -1012,6 +1092,7 @@ function doPost(e) {
           sheet.setFrozenRows(1);
         }
       });
+      SpreadsheetApp.flush();
       return jsonOut({ ok: true, data: { initialized: true } });
     }
 
@@ -1031,8 +1112,14 @@ function doPost(e) {
 
     if (action === "upsert") {
       const p = body.payload;
-      const sheet = ss.getSheetByName(p.tab);
-      if (!sheet) return jsonOut({ ok: false, error: "Sheet tab not found: " + p.tab });
+      let sheet = ss.getSheetByName(p.tab);
+      if (!sheet) sheet = ss.insertSheet(p.tab);
+      if (sheet.getLastRow() === 0) {
+        const initHeaders = Object.keys(p.row);
+        sheet.getRange(1, 1, 1, initHeaders.length).setValues([initHeaders]);
+        sheet.getRange(1, 1, 1, initHeaders.length).setFontWeight("bold");
+        sheet.setFrozenRows(1);
+      }
       const lastCol = Math.max(sheet.getLastColumn(), Object.keys(p.row).length);
       const headers = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0].filter(Boolean);
       const keyIdx = headers.indexOf(p.keyField);
@@ -1053,6 +1140,7 @@ function doPost(e) {
       } else {
         sheet.appendRow(values);
       }
+      SpreadsheetApp.flush();
       return jsonOut({ ok: true });
     }
 
@@ -1069,17 +1157,30 @@ function doPost(e) {
           sheet.deleteRow(i + 2);
         }
       }
+      SpreadsheetApp.flush();
       return jsonOut({ ok: true });
     }
 
     if (action === "saveSettings") {
       const rows = (body.payload && body.payload.rows) || [];
-      const sheet = ss.getSheetByName("Settings");
-      if (!sheet) return jsonOut({ ok: false, error: "Settings tab not found" });
-      const data = [["key", "value", "label"]].concat(rows.map(function(r) { return [r.key, r.value, r.label]; }));
+      let sheet = ss.getSheetByName("Settings");
+      if (!sheet) sheet = ss.insertSheet("Settings");
+      const preserved = [];
+      if (sheet.getLastRow() >= 2 && sheet.getLastColumn() >= 2) {
+        const existing = sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.min(3, sheet.getLastColumn())).getDisplayValues();
+        existing.forEach(function(r) {
+          if (String(r[0] || "").indexOf("__admin_") === 0) {
+            preserved.push([r[0], r[1] || "", r[2] || ""]);
+          }
+        });
+      }
+      const data = [["key", "value", "label"]]
+        .concat(rows.map(function(r) { return [r.key, r.value, r.label]; }))
+        .concat(preserved);
       sheet.clearContents();
       sheet.getRange(1, 1, data.length, 3).setValues(data);
       sheet.getRange(1, 1, 1, 3).setFontWeight("bold");
+      SpreadsheetApp.flush();
       return jsonOut({ ok: true });
     }
 

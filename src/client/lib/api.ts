@@ -26,6 +26,14 @@ export interface AdminOverviewResponse {
   appsScriptTemplate: string;
 }
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function requestJson<T>(url: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -36,7 +44,7 @@ async function requestJson<T>(url: string, options: RequestInit = {}): Promise<T
   });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    throw new ApiError(data.error || `Request failed (${res.status})`, res.status);
   }
   return data;
 }
@@ -97,7 +105,7 @@ export function createAdminApi(token: string) {
         body: JSON.stringify(payload),
       }),
     testSheets: () =>
-      requestJson<{ ok: boolean; mode: string; message: string; tabsFound?: string[]; productCount?: number }>(
+      requestJson<{ ok: boolean; mode: string; isDemo?: boolean; message: string; tabsFound?: string[]; productCount?: number }>(
         '/api/admin/sheets/test',
         { method: 'POST', headers }
       ),
@@ -188,22 +196,31 @@ export function createAdminApi(token: string) {
         headers,
         body: JSON.stringify(settings),
       }),
+    updateCredentials: (currentPassword: string, newUsername: string, newPassword: string) =>
+      requestJson<{ ok: boolean; token: string }>('/api/admin/auth/credentials', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ currentPassword, newUsername, newPassword }),
+      }),
   };
 }
 
 export const authApi = {
   status: () =>
-    requestJson<{ hasEnvAdminPassword: boolean; hasClaimedAdminPassword: boolean; needsInitialSetup: boolean }>(
-      '/api/admin/auth-status'
-    ),
-  setup: (password: string) =>
+    requestJson<{
+      hasEnvAdminPassword: boolean;
+      hasClaimedAdminPassword: boolean;
+      needsInitialSetup: boolean;
+      defaultUsername: string;
+    }>('/api/admin/auth-status'),
+  setup: (username: string, password: string) =>
     requestJson<{ ok: boolean; token: string }>('/api/admin/setup', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     }),
-  login: (password: string) =>
+  login: (username: string, password: string) =>
     requestJson<{ ok: boolean; token: string }>('/api/admin/login', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     }),
 };

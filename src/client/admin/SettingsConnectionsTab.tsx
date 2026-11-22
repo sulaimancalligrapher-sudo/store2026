@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   CheckCircle2,
   Copy,
@@ -17,7 +18,7 @@ import type {
   SheetsConnectionMode,
   StoreSettings,
 } from '../../shared/types.ts';
-import type { createAdminApi } from '../lib/api.ts';
+import { ApiError, type createAdminApi } from '../lib/api.ts';
 
 interface SettingsConnectionsTabProps {
   api: ReturnType<typeof createAdminApi>;
@@ -26,6 +27,8 @@ interface SettingsConnectionsTabProps {
   schemaTabs: SheetSchemaTab[];
   appsScriptTemplate: string;
   onRefresh: () => Promise<void>;
+  onSessionExpired: (message: string) => void;
+  onTokenChange: (token: string) => void;
 }
 
 export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
@@ -35,6 +38,8 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
   schemaTabs,
   appsScriptTemplate,
   onRefresh,
+  onSessionExpired,
+  onTokenChange,
 }) => {
   const [sheetsMode, setSheetsMode] = useState<SheetsConnectionMode>(integrationStatus.sheetsMode);
   const [appsScriptUrl, setAppsScriptUrl] = useState('');
@@ -52,29 +57,79 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
 
   const [storeForm, setStoreForm] = useState<StoreSettings>(initialSettings);
 
+  const [credCurrentPass, setCredCurrentPass] = useState('');
+  const [credNewUser, setCredNewUser] = useState(integrationStatus.adminUsername || 'admin');
+  const [credNewPass, setCredNewPass] = useState('');
+
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [copiedScript, setCopiedScript] = useState(false);
+  const [copiedBackendCfg, setCopiedBackendCfg] = useState(false);
   const [expandedTab, setExpandedTab] = useState<string>('Products');
 
   const notify = (type: 'ok' | 'err', text: string) => setFeedback({ type, text });
 
-  const handleSaveSheetsConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const payload: Parameters<typeof api.updateIntegrations>[0] = { sheetsMode };
+  useEffect(() => {
+    setSheetsMode(integrationStatus.sheetsMode);
+  }, [integrationStatus.sheetsMode]);
+
+  useEffect(() => {
+    setStoreForm(initialSettings);
+  }, [initialSettings]);
+
+  const handleApiError = (err: unknown, fallback: string) => {
+    if (err instanceof ApiError && err.status === 401) {
+      onSessionExpired('انتهت صلاحية جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+      return;
+    }
+    notify('err', err instanceof Error ? err.message : fallback);
+  };
+
+  const persistSheetsInputsIfNeeded = async (): Promise<SheetsConnectionMode> => {
+    let effectiveMode: SheetsConnectionMode = sheetsMode;
+    if (effectiveMode === 'demo' && appsScriptUrl.trim()) {
+      effectiveMode = 'apps_script';
+      setSheetsMode('apps_script');
+    } else if (effectiveMode === 'demo' && sheetId.trim() && serviceAccountEmail.trim()) {
+      effectiveMode = 'service_account';
+      setSheetsMode('service_account');
+    }
+
+    const hasPendingInputs =
+      effectiveMode !== integrationStatus.sheetsMode ||
+      Boolean(appsScriptUrl.trim()) ||
+      Boolean(appsScriptSecret.trim()) ||
+      Boolean(sheetId.trim()) ||
+      Boolean(serviceAccountEmail.trim()) ||
+      Boolean(serviceAccountKey.trim());
+
+    if (hasPendingInputs) {
+      const payload: Parameters<typeof api.updateIntegrations>[0] = { sheetsMode: effectiveMode };
       if (appsScriptUrl.trim()) payload.appsScriptUrl = appsScriptUrl.trim();
       if (appsScriptSecret.trim()) payload.appsScriptSecret = appsScriptSecret.trim();
       if (sheetId.trim()) payload.sheetId = sheetId.trim();
       if (serviceAccountEmail.trim()) payload.serviceAccountEmail = serviceAccountEmail.trim();
       if (serviceAccountKey.trim()) payload.serviceAccountPrivateKey = serviceAccountKey.trim();
       await api.updateIntegrations(payload);
+    }
+
+    return effectiveMode;
+  };
+
+  const handleSaveSheetsConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const effectiveMode = await persistSheetsInputsIfNeeded();
       await onRefresh();
-      notify('ok', 'تم حفظ إعدادات الربط بنجاح. يمكنك الآن الضغط على "اختبار الاتصال" أو "تهيئة أوراق الشيت".');
+      if (effectiveMode === 'demo') {
+        notify('err', 'النظام مضبوط حالياً على الوضع التجريبي المحلي ولا يحفظ في Google Sheets.');
+      } else {
+        notify('ok', 'تم حفظ إعدادات الربط بنجاح. يمكنك الآن الضغط على "اختبار الاتصال" أو "تهيئة أوراق الشيت".');
+      }
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'تعذر حفظ إعدادات الربط');
+      handleApiError(err, 'تعذر حفظ إعدادات الربط');
     } finally {
       setBusy(false);
     }
@@ -84,10 +139,16 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
     setBusy(true);
     setFeedback(null);
     try {
+      await persistSheetsInputsIfNeeded();
       const res = await api.testSheets();
-      notify('ok', `${res.message} (عدد المنتجات المقروءة: ${res.productCount ?? 0})`);
+      await onRefresh();
+      if (!res.ok || res.isDemo) {
+        notify('err', res.message);
+      } else {
+        notify('ok', `${res.message} (عدد المنتجات المقروءة: ${res.productCount ?? 0})`);
+      }
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'فشل اختبار الاتصال بـ Google Sheets');
+      handleApiError(err, 'فشل اختبار الاتصال بـ Google Sheets');
     } finally {
       setBusy(false);
     }
@@ -97,11 +158,16 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
     setBusy(true);
     setFeedback(null);
     try {
+      await persistSheetsInputsIfNeeded();
       const res = await api.initSheets(seedSampleData);
       await onRefresh();
-      notify('ok', res.message);
+      if (!res.ok) {
+        notify('err', res.message);
+      } else {
+        notify('ok', res.message);
+      }
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'تعذر تهيئة أوراق الشيت');
+      handleApiError(err, 'تعذر تهيئة أوراق الشيت');
     } finally {
       setBusy(false);
     }
@@ -120,7 +186,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       await onRefresh();
       notify('ok', 'تم حفظ إعدادات بوت تيليجرام بنجاح.');
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'تعذر حفظ إعدادات تيليجرام');
+      handleApiError(err, 'تعذر حفظ إعدادات تيليجرام');
     } finally {
       setBusy(false);
     }
@@ -133,7 +199,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       const res = await api.testTelegram();
       notify('ok', res.message);
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'فشل إرسال الرسالة التجريبية');
+      handleApiError(err, 'فشل إرسال الرسالة التجريبية');
     } finally {
       setBusy(false);
     }
@@ -146,7 +212,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       const res = await api.setTelegramWebhook(webhookUrl);
       notify('ok', res.message);
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'فشل تسجيل Webhook تيليجرام');
+      handleApiError(err, 'فشل تسجيل Webhook تيليجرام');
     } finally {
       setBusy(false);
     }
@@ -161,7 +227,25 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       await onRefresh();
       notify('ok', 'تم حفظ إعدادات المتجر والدفع في ورقة Settings بنجاح.');
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'تعذر حفظ إعدادات المتجر');
+      handleApiError(err, 'تعذر حفظ إعدادات المتجر');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpdateCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const res = await api.updateCredentials(credCurrentPass, credNewUser.trim(), credNewPass);
+      onTokenChange(res.token);
+      setCredCurrentPass('');
+      setCredNewPass('');
+      await onRefresh();
+      notify('ok', 'تم تحديث اسم المستخدم ورقم التسجيل الإداري وحفظهما بنجاح.');
+    } catch (err) {
+      handleApiError(err, 'تعذر تحديث بيانات الدخول');
     } finally {
       setBusy(false);
     }
@@ -171,6 +255,20 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
     navigator.clipboard.writeText(appsScriptTemplate);
     setCopiedScript(true);
     setTimeout(() => setCopiedScript(false), 2500);
+  };
+
+  const backendConfigSnippet = `import type { SheetsConnectionMode } from '../shared/types.ts';
+
+export const BACKEND_CONFIG = {
+  sheetsMode: '${appsScriptUrl.trim() ? 'apps_script' : sheetsMode}' as SheetsConnectionMode,
+  appsScriptUrl: '${appsScriptUrl.trim() || 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec'}',
+  adminUsername: '${credNewUser.trim() || integrationStatus.adminUsername || 'admin'}',
+};`;
+
+  const copyBackendConfigSnippet = () => {
+    navigator.clipboard.writeText(backendConfigSnippet);
+    setCopiedBackendCfg(true);
+    setTimeout(() => setCopiedBackendCfg(false), 2500);
   };
 
   return (
@@ -229,6 +327,16 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
             </button>
           </div>
         </div>
+
+        {integrationStatus.sheetsMode === 'demo' && (
+          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950 leading-relaxed">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
+            <div>
+              <strong>تنبيه مهم:</strong> الوضع الحالي هو <strong>الوضع التجريبي</strong>؛ أي منتج أو طلب جديد يُسجَّل الآن في ذاكرة الموقع فقط ولا يُرسل إلى Google Sheets.
+              اختر <strong>Google Apps Script</strong> أدناه وأدخل الرابط ثم اضغط <strong>«حفظ وضع الربط»</strong> أو <strong>«تهيئة أوراق الشيت تلقائياً»</strong> لتفعيل الحفظ الحقيقي.
+            </div>
+          </div>
+        )}
 
         {/* Mode Selector */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -316,14 +424,20 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-[#44413C]">المفتاح السري (Secret Token)</label>
+                  <label className="mb-1 block text-xs font-medium text-[#44413C]">
+                    المفتاح السري (Secret Token) — اختياري
+                  </label>
                   <input
                     type="password"
                     value={appsScriptSecret}
                     onChange={(e) => setAppsScriptSecret(e.target.value)}
-                    placeholder="مطابق لقيمة SECRET_TOKEN داخل السكربت"
+                    placeholder="اتركه فارغاً أو اكتب نفس SECRET_TOKEN في السكربت"
                     className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm focus:border-[#141413] focus:outline-none"
                   />
+                  <p className="mt-1.5 text-[11px] text-[#6E6A63] leading-relaxed">
+                    <strong>ما هذا؟</strong> كلمة مرور اختيارية من تأليفك (مثل <code>my-secret-2026</code>) تمنع أي شخص غريب من الكتابة في الشيت عبر رابط السكربت.
+                    إذا تركت السطر <code>SECRET_TOKEN = &quot;CHANGE_THIS_TO_YOUR_SECRET&quot;</code> كما هو داخل كود Apps Script فيمكنك ترك هذا الحقل <strong>فارغاً</strong>.
+                  </p>
                 </div>
               </div>
             </div>
@@ -373,8 +487,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-[#6E6A63]">
-              للثبات الدائم بعد إعادة التشغيل على Vercel، أضف هذه القيم أيضاً في{' '}
-              <span className="font-mono-num text-[#141413]">Vercel → Settings → Environment Variables</span>.
+              الحفظ هنا يعمل فوراً على السيرفر الحالي. لتعميم الرابط على جميع الأجهزة دون متغيرات بيئة في Vercel، ضعه داخل الملف الخلفي بالأسفل.
             </p>
             <button
               type="submit"
@@ -383,6 +496,41 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
             >
               حفظ وضع الربط
             </button>
+          </div>
+
+          <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-bold text-[#141413]">
+                  الربط الدائم داخل الملف الخلفي (بدون متغيرات بيئة في Vercel)
+                </p>
+                <p className="text-[11px] text-[#6E6A63] mt-0.5">
+                  الصق هذا المقطع داخل الملف <span className="font-mono-num text-[#141413]">src/server/backendConfig.ts</span> قبل الرفع إلى GitHub لتفتح جميع الأجهزة المتجر وترسل الطلبات إلى الشيت تلقائياً.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={copyBackendConfigSnippet}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#E5E2DC] bg-white px-3 py-1.5 text-xs font-semibold text-[#141413] hover:bg-[#EFECE6] cursor-pointer"
+              >
+                {copiedBackendCfg ? <Check className="h-3.5 w-3.5 text-emerald-700" /> : <Copy className="h-3.5 w-3.5" />}
+                <span>{copiedBackendCfg ? 'تم النسخ!' : 'نسخ إعدادات الملف الخلفي'}</span>
+              </button>
+            </div>
+            <pre
+              dir="ltr"
+              className="overflow-x-auto rounded-lg border border-[#E5E2DC] bg-white p-3 text-[11px] font-mono-num text-[#141413]"
+            >
+              {backendConfigSnippet}
+            </pre>
+            <p className="text-[11px] text-[#6E6A63]">
+              حالة الملف الخلفي الحالية:{' '}
+              <strong className={integrationStatus.hasFileAppsScriptUrl ? 'text-emerald-700' : 'text-[#141413]'}>
+                {integrationStatus.hasFileAppsScriptUrl
+                  ? 'تم تضمين رابط Apps Script في الملف الخلفي ✓'
+                  : 'لم يُكتب رابط في src/server/backendConfig.ts بعد'}
+              </strong>
+            </p>
           </div>
         </form>
       </div>
@@ -699,14 +847,82 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
         <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-2 text-xs text-[#44413C]">
           <p className="font-bold text-[#141413] flex items-center gap-1.5">
             <KeyRound className="h-4 w-4 text-[#B45309]" />
-            <span>متغيرات البيئة للنشر الدائم على Vercel (Environment Variables):</span>
+            <span>متغيرات البيئة الاختيارية على Vercel (Environment Variables):</span>
           </p>
           <p className="font-mono-num text-[11px] leading-relaxed text-[#141413]">
-            ADMIN_PASSWORD · GOOGLE_SHEETS_MODE=apps_script · GOOGLE_APPS_SCRIPT_URL · GOOGLE_APPS_SCRIPT_SECRET ·
-            TELEGRAM_BOT_TOKEN · TELEGRAM_ADMIN_CHAT_ID
+            ADMIN_USERNAME · ADMIN_PASSWORD · TELEGRAM_BOT_TOKEN · TELEGRAM_ADMIN_CHAT_ID · GOOGLE_APPS_SCRIPT_SECRET
           </p>
         </div>
       </div>
+
+      {/* 5. Admin Credentials Management */}
+      <form onSubmit={handleUpdateCredentials} className="rounded-xl border border-[#E5E2DC] bg-white p-6 space-y-4">
+        <div className="flex items-center gap-3 border-b border-[#E5E2DC] pb-4">
+          <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] p-2.5 text-[#141413]">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-[#141413]">بيانات دخول لوحة التحكم (/admin)</h2>
+            <p className="text-xs text-[#6E6A63]">
+              اسم المستخدم الحالي:{' '}
+              <strong className="font-mono-num text-[#141413]">{integrationStatus.adminUsername}</strong>
+              {integrationStatus.hasEnvAdminPassword && ' · كلمة المرور مضبوطة عبر ADMIN_PASSWORD في البيئة'}
+            </p>
+          </div>
+        </div>
+
+        {integrationStatus.hasEnvAdminPassword ? (
+          <p className="text-xs text-[#44413C] rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-3.5">
+            بيانات الدخول محمية حالياً عبر متغير البيئة <span className="font-mono-num">ADMIN_PASSWORD</span>. لتعديلها حدّث القيمة في إعدادات البيئة.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[#44413C]">رقم التسجيل الحالي *</label>
+                <input
+                  required
+                  type="password"
+                  value={credCurrentPass}
+                  onChange={(e) => setCredCurrentPass(e.target.value)}
+                  placeholder="أدخل الرقم الحالي للتأكيد"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[#44413C]">اسم المستخدم الجديد</label>
+                <input
+                  required
+                  value={credNewUser}
+                  onChange={(e) => setCredNewUser(e.target.value)}
+                  placeholder="admin"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:bg-white focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[#44413C]">رقم التسجيل الجديد (اتركه فارغاً للإبقاء على الحالي)</label>
+                <input
+                  type="password"
+                  minLength={6}
+                  value={credNewPass}
+                  onChange={(e) => setCredNewPass(e.target.value)}
+                  placeholder="6 أحرف أو أرقام فأكثر"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-lg bg-[#141413] px-5 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] disabled:opacity-60 cursor-pointer"
+              >
+                حفظ بيانات الدخول في الشيت
+              </button>
+            </div>
+          </div>
+        )}
+      </form>
     </div>
   );
 };

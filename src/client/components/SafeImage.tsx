@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Package } from 'lucide-react';
+import { getImageCandidates } from '../../shared/imageUrl.ts';
 
 interface SafeImageProps {
   src?: string;
@@ -14,9 +15,16 @@ export const SafeImage: React.FC<SafeImageProps> = ({
   className = 'h-full w-full object-cover',
   aspectClass = 'aspect-[4/3]',
 }) => {
-  const [failed, setFailed] = useState(false);
+  const candidates = useMemo(() => getImageCandidates(src), [src]);
+  const [attempt, setAttempt] = useState(0);
 
-  if (!src || failed) {
+  useEffect(() => {
+    setAttempt(0);
+  }, [src]);
+
+  const activeSrc = candidates[attempt];
+
+  if (!activeSrc) {
     return (
       <div
         className={`${aspectClass} flex flex-col items-center justify-center bg-[#EFECE6] text-[#8A847B] p-4 text-center`}
@@ -30,10 +38,10 @@ export const SafeImage: React.FC<SafeImageProps> = ({
   return (
     <div className={`${aspectClass} overflow-hidden bg-[#EFECE6]`}>
       <img
-        src={src}
+        src={activeSrc}
         alt={alt}
         referrerPolicy="no-referrer"
-        onError={() => setFailed(true)}
+        onError={() => setAttempt((prev) => prev + 1)}
         className={className}
         loading="lazy"
       />

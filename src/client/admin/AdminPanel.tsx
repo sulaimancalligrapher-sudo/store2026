@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   BarChart3,
   Edit3,
+  ExternalLink,
   FolderKanban,
   Lock,
   LogOut,
@@ -17,7 +19,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { OrderStatus, Product } from '../../shared/types.ts';
-import { authApi, createAdminApi, type AdminOverviewResponse } from '../lib/api.ts';
+import { extractGoogleDriveFileId } from '../../shared/imageUrl.ts';
+import { ApiError, authApi, createAdminApi, type AdminOverviewResponse } from '../lib/api.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 import { ProductFormModal } from './ProductFormModal.tsx';
 import { SettingsConnectionsTab } from './SettingsConnectionsTab.tsx';
@@ -36,17 +39,21 @@ interface AdminPanelProps {
   token: string | null;
   onTokenChange: (token: string | null) => void;
   onCatalogUpdated: () => void;
+  onBackToStore?: () => void;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   token,
   onTokenChange,
   onCatalogUpdated,
+  onBackToStore,
 }) => {
   const [authChecking, setAuthChecking] = useState(true);
   const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('admin');
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState('');
+  const [sessionNotice, setSessionNotice] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
   const [tab, setTab] = useState<AdminTab>('overview');
@@ -89,10 +96,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   useEffect(() => {
     authApi
       .status()
-      .then((st) => setNeedsInitialSetup(st.needsInitialSetup))
+      .then((st) => {
+        setNeedsInitialSetup(st.needsInitialSetup);
+        if (st.defaultUsername) {
+          setUsernameInput(st.defaultUsername);
+        }
+      })
       .catch(() => undefined)
       .finally(() => setAuthChecking(false));
   }, []);
+
+  const handleSessionExpired = useCallback(
+    (message: string) => {
+      setSessionNotice(message);
+      setData(null);
+      onTokenChange(null);
+      authApi
+        .status()
+        .then((st) => setNeedsInitialSetup(st.needsInitialSetup))
+        .catch(() => undefined);
+    },
+    [onTokenChange]
+  );
+
+  const handleMutationError = useCallback(
+    (err: unknown, fallback: string) => {
+      if (err instanceof ApiError && err.status === 401) {
+        handleSessionExpired('انتهت جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+        return;
+      }
+      setErrorMsg(err instanceof Error ? err.message : fallback);
+    },
+    [handleSessionExpired]
+  );
 
   const loadOverview = useCallback(async () => {
     if (!api) return;
@@ -102,15 +138,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const res = await api.overview();
       setData(res);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'تعذر تحميل البيانات';
-      setErrorMsg(msg);
-      if (msg.includes('تسجيل الدخول') || msg.includes('منتهية')) {
-        onTokenChange(null);
+      if (err instanceof ApiError && err.status === 401) {
+        handleSessionExpired('جلسة الإدارة غير صالحة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'تعذر تحميل البيانات');
       }
     } finally {
       setLoading(false);
     }
-  }, [api, onTokenChange]);
+  }, [api, handleSessionExpired]);
 
   useEffect(() => {
     if (token) {
@@ -121,11 +157,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    setSessionNotice('');
     setAuthBusy(true);
     try {
       const res = needsInitialSetup
-        ? await authApi.setup(passwordInput)
-        : await authApi.login(passwordInput);
+        ? await authApi.setup(usernameInput.trim() || 'admin', passwordInput)
+        : await authApi.login(usernameInput.trim() || 'admin', passwordInput);
       onTokenChange(res.token);
       setNeedsInitialSetup(false);
       setPasswordInput('');
@@ -143,35 +180,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   if (!token) {
     return (
-      <section className="mx-auto max-w-md px-4 py-16">
-        <div className="rounded-xl border border-[#E5E2DC] bg-white p-8 shadow-sm space-y-5">
+      <section className="min-h-screen flex flex-col items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md rounded-xl border border-[#E5E2DC] bg-white p-8 shadow-sm space-y-5">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] p-2.5 text-[#141413]">
               <Lock className="h-5 w-5" />
             </div>
             <div>
               <h1 className="text-xl font-bold text-[#141413]">
-                {needsInitialSetup ? 'إعداد كلمة مرور لوحة التحكم' : 'دخول لوحة تحكم التاجر'}
+                {needsInitialSetup ? 'تفعيل حساب الإدارة لأول مرة' : 'بوابة دخول الإدارة'}
               </h1>
               <p className="text-xs text-[#6E6A63]">
                 {needsInitialSetup
-                  ? 'أول تشغيل: أنشئ كلمة مرور لحماية لوحة التحكم والإعدادات (6 أحرف فأكثر).'
-                  : 'أدخل كلمة مرور الإدارة للوصول إلى المنتجات والطلبات وإعدادات Google Sheets.'}
+                  ? 'عيّن اسم المستخدم ورقم التسجيل الخاص بك لتأمين لوحة التحكم.'
+                  : 'أدخل اسم المستخدم ورقم التسجيل لفتح لوحة إدارة المتجر.'}
               </p>
             </div>
           </div>
 
           {authChecking ? (
-            <p className="text-sm text-[#6E6A63]">جاري التحقق...</p>
+            <p className="text-sm text-[#6E6A63]">جاري التحقق من حالة الحساب...</p>
           ) : (
             <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {sessionNotice && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900 leading-relaxed">
+                  {sessionNotice}
+                </div>
+              )}
               {authError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800">
                   {authError}
                 </div>
               )}
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-[#44413C]">كلمة المرور</label>
+                <label className="mb-1.5 block text-xs font-medium text-[#44413C]">
+                  اسم المستخدم (الافتراضي: <span className="font-mono-num font-semibold">admin</span>)
+                </label>
+                <input
+                  required
+                  type="text"
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  placeholder="admin"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2.5 text-sm font-mono-num focus:border-[#141413] focus:bg-white focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-[#44413C]">
+                  {needsInitialSetup ? 'اختر رقم التسجيل / كلمة المرور (6 أحرف أو أرقام فأكثر)' : 'رقم التسجيل / كلمة المرور'}
+                </label>
                 <input
                   required
                   type="password"
@@ -187,14 +244,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 disabled={authBusy}
                 className="w-full rounded-lg bg-[#141413] py-2.5 text-sm font-semibold text-white hover:bg-[#2A2A28] disabled:opacity-60 cursor-pointer"
               >
-                {authBusy ? 'جاري التحقق...' : needsInitialSetup ? 'حفظ كلمة المرور والدخول' : 'تسجيل الدخول'}
+                {authBusy ? 'جاري التحقق...' : needsInitialSetup ? 'تثبيت بيانات الدخول وفتح اللوحة' : 'تسجيل الدخول'}
               </button>
-              {needsInitialSetup && (
-                <p className="text-[11px] text-[#6E6A63] leading-relaxed">
-                  ملاحظة للنشر على Vercel: أضف متغير البيئة <span className="font-mono-num">ADMIN_PASSWORD</span> في لوحة Vercel لضمان ثبات كلمة المرور عبر جميع الطلبات السحابية.
+              <div className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-3 text-[11px] text-[#44413C] leading-relaxed space-y-1">
+                <p>
+                  <strong>آلية الحساب:</strong> اسم المستخدم الافتراضي هو <span className="font-mono-num font-semibold">admin</span>، وعند تفعيل رقم التسجيل لأول مرة يُحفظ مشفراً في ورقة <span className="font-mono-num">Settings</span> داخل Google Sheets (عند ربط الشيت) أو في الخادم.
                 </p>
-              )}
+                <p>
+                  كما يمكنك دائماً تعديل الاسم والرقم من متغيرات البيئة <span className="font-mono-num">ADMIN_USERNAME</span> و <span className="font-mono-num">ADMIN_PASSWORD</span>.
+                </p>
+              </div>
             </form>
+          )}
+
+          {onBackToStore && (
+            <div className="border-t border-[#E5E2DC] pt-4 text-center">
+              <button
+                type="button"
+                onClick={onBackToStore}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-[#6E6A63] hover:text-[#141413] cursor-pointer"
+              >
+                <ArrowRight className="h-3.5 w-3.5" />
+                <span>العودة إلى واجهة المتجر</span>
+              </button>
+            </div>
           )}
         </div>
       </section>
@@ -274,7 +347,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {onBackToStore && (
+            <button
+              type="button"
+              onClick={onBackToStore}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-medium text-[#141413] hover:bg-[#F3F1EC] cursor-pointer"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span>عرض المتجر</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={refreshAll}
@@ -293,6 +376,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Demo Mode Banner */}
+      {data.integrationStatus.sheetsMode === 'demo' && tab !== 'settings' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" />
+            <span>
+              <strong>وضع المعاينة التجريبي:</strong> الطلبات والمنتجات الجديدة لا تُحفظ حالياً في Google Sheets. فعّل الربط أولاً من الإعدادات.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTab('settings')}
+            className="rounded-lg bg-[#141413] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
+          >
+            إعدادات ربط الشيت
+          </button>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-900">
+          <span>{errorMsg}</span>
+          <button type="button" onClick={() => setErrorMsg('')} className="underline cursor-pointer">
+            إغلاق
+          </button>
+        </div>
+      )}
 
       {/* Admin Tabs */}
       <div className="flex flex-wrap gap-1.5 rounded-xl bg-[#F3F1EC] p-1.5">
@@ -461,8 +572,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <button
                           type="button"
                           onClick={async () => {
-                            await api.saveProduct({ ...p, is_active: !p.is_active }, true);
-                            await refreshAll();
+                            try {
+                              await api.saveProduct({ ...p, is_active: !p.is_active }, true);
+                              await refreshAll();
+                            } catch (err) {
+                              handleMutationError(err, 'تعذر تحديث حالة المنتج');
+                            }
                           }}
                           className={`font-semibold cursor-pointer ${
                             p.is_active ? 'text-emerald-700' : 'text-[#8A847B]'
@@ -484,8 +599,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <button
                             type="button"
                             onClick={async () => {
-                              await api.deleteProduct(p.id);
-                              await refreshAll();
+                              try {
+                                await api.deleteProduct(p.id);
+                                await refreshAll();
+                              } catch (err) {
+                                handleMutationError(err, 'تعذر حذف المنتج');
+                              }
                             }}
                             className="rounded-lg border border-[#E5E2DC] p-1.5 text-[#6E6A63] hover:text-red-700 cursor-pointer"
                             title="حذف"
@@ -547,8 +666,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <select
                       value={order.status}
                       onChange={async (e) => {
-                        await api.updateOrderStatus(order.id, e.target.value as OrderStatus);
-                        await refreshAll();
+                        try {
+                          await api.updateOrderStatus(order.id, e.target.value as OrderStatus);
+                          await refreshAll();
+                        } catch (err) {
+                          handleMutationError(err, 'تعذر تحديث حالة الطلب');
+                        }
                       }}
                       className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs font-semibold text-[#141413] focus:outline-none"
                     >
@@ -601,39 +724,69 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (!catName.trim()) return;
-                await api.saveCategory({ name: catName.trim(), image_url: catImage.trim(), sort_order: data.categories.length + 1 });
-                setCatName('');
-                await refreshAll();
+                try {
+                  await api.saveCategory({
+                    name: catName.trim(),
+                    image_url: catImage.trim(),
+                    sort_order: data.categories.length + 1,
+                  });
+                  setCatName('');
+                  await refreshAll();
+                } catch (err) {
+                  handleMutationError(err, 'تعذر إضافة القسم');
+                }
               }}
-              className="flex flex-wrap gap-2"
+              className="space-y-2.5"
             >
               <input
                 required
                 value={catName}
                 onChange={(e) => setCatName(e.target.value)}
                 placeholder="اسم القسم الجديد"
-                className="flex-1 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-sm focus:outline-none"
+                className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-sm focus:outline-none"
               />
-              <button
-                type="submit"
-                className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white cursor-pointer"
-              >
-                إضافة قسم
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  value={catImage}
+                  onChange={(e) => setCatImage(e.target.value)}
+                  placeholder="رابط صورة القسم (أو رابط Google Drive)"
+                  className="flex-1 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs font-mono-num focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white cursor-pointer shrink-0"
+                >
+                  إضافة قسم
+                </button>
+              </div>
+              {extractGoogleDriveFileId(catImage) && (
+                <p className="text-[11px] text-emerald-700">
+                  ✓ تم التعرف على رابط Google Drive لصورة القسم (تأكد أن المشاركة «أي شخص لديه الرابط»).
+                </p>
+              )}
             </form>
 
             <div className="divide-y divide-[#E5E2DC]">
               {data.categories.map((c) => (
-                <div key={c.id} className="flex items-center justify-between py-2.5 text-sm">
-                  <div>
-                    <span className="font-semibold text-[#141413]">{c.name}</span>
-                    <span className="mr-2 font-mono-num text-xs text-[#6E6A63]">{c.id}</span>
+                <div key={c.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 shrink-0 overflow-hidden rounded border border-[#E5E2DC]">
+                      <SafeImage src={c.image_url} alt={c.name} aspectClass="aspect-square" />
+                    </div>
+                    <div>
+                      <span className="font-semibold text-[#141413]">{c.name}</span>
+                      <span className="mr-2 font-mono-num text-xs text-[#6E6A63]">{c.id}</span>
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={async () => {
-                      await api.deleteCategory(c.id);
-                      await refreshAll();
+                      try {
+                        await api.deleteCategory(c.id);
+                        await refreshAll();
+                      } catch (err) {
+                        handleMutationError(err, 'تعذر حذف القسم');
+                      }
                     }}
                     className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer"
                   >
@@ -651,14 +804,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (!banTitle.trim()) return;
-                await api.saveBanner({
-                  title: banTitle.trim(),
-                  subtitle: banSubtitle.trim(),
-                  image_url: banImage.trim(),
-                });
-                setBanTitle('');
-                setBanSubtitle('');
-                await refreshAll();
+                try {
+                  await api.saveBanner({
+                    title: banTitle.trim(),
+                    subtitle: banSubtitle.trim(),
+                    image_url: banImage.trim(),
+                  });
+                  setBanTitle('');
+                  setBanSubtitle('');
+                  await refreshAll();
+                } catch (err) {
+                  handleMutationError(err, 'تعذر إضافة البانر');
+                }
               }}
               className="space-y-2.5"
             >
@@ -679,30 +836,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <input
                   value={banImage}
                   onChange={(e) => setBanImage(e.target.value)}
-                  placeholder="رابط صورة البانر (16:9)"
+                  placeholder="رابط صورة البانر (16:9 أو رابط Google Drive)"
                   className="flex-1 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs font-mono-num focus:outline-none"
                 />
                 <button
                   type="submit"
-                  className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white cursor-pointer"
+                  className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white cursor-pointer shrink-0"
                 >
                   إضافة بانر
                 </button>
               </div>
+              {extractGoogleDriveFileId(banImage) && (
+                <p className="text-[11px] text-emerald-700">
+                  ✓ تم التعرف على رابط Google Drive لصورة البانر (تأكد أن المشاركة «أي شخص لديه الرابط»).
+                </p>
+              )}
             </form>
 
             <div className="divide-y divide-[#E5E2DC]">
               {data.banners.map((b) => (
                 <div key={b.id} className="flex items-center justify-between gap-3 py-3 text-sm">
-                  <div>
-                    <p className="font-semibold text-[#141413]">{b.title}</p>
-                    <p className="text-xs text-[#6E6A63] line-clamp-1">{b.subtitle}</p>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-16 shrink-0 overflow-hidden rounded border border-[#E5E2DC]">
+                      <SafeImage src={b.image_url} alt={b.title} aspectClass="aspect-video" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-[#141413] truncate">{b.title}</p>
+                      <p className="text-xs text-[#6E6A63] line-clamp-1">{b.subtitle}</p>
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={async () => {
-                      await api.deleteBanner(b.id);
-                      await refreshAll();
+                      try {
+                        await api.deleteBanner(b.id);
+                        await refreshAll();
+                      } catch (err) {
+                        handleMutationError(err, 'تعذر حذف البانر');
+                      }
                     }}
                     className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer shrink-0"
                   >
@@ -728,16 +899,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                await api.saveCoupon({
-                  code: cpnCode.trim().toUpperCase(),
-                  discount_type: cpnType,
-                  discount_value: Number(cpnVal),
-                  min_order: Number(cpnMin),
-                  max_uses: Number(cpnMaxUses),
-                  expires_at: cpnExpires,
-                });
-                setCpnCode('');
-                await refreshAll();
+                try {
+                  await api.saveCoupon({
+                    code: cpnCode.trim().toUpperCase(),
+                    discount_type: cpnType,
+                    discount_value: Number(cpnVal),
+                    min_order: Number(cpnMin),
+                    max_uses: Number(cpnMaxUses),
+                    expires_at: cpnExpires,
+                  });
+                  setCpnCode('');
+                  await refreshAll();
+                } catch (err) {
+                  handleMutationError(err, 'تعذر إضافة الكوبون');
+                }
               }}
               className="grid grid-cols-2 sm:grid-cols-3 gap-2.5"
             >
@@ -799,8 +974,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <button
                     type="button"
                     onClick={async () => {
-                      await api.deleteCoupon(c.id);
-                      await refreshAll();
+                      try {
+                        await api.deleteCoupon(c.id);
+                        await refreshAll();
+                      } catch (err) {
+                        handleMutationError(err, 'تعذر حذف الكوبون');
+                      }
                     }}
                     className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer"
                   >
@@ -821,14 +1000,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                await api.saveCity({
-                  name: cityName.trim(),
-                  delivery_fee: Number(cityFee),
-                  estimated_days: cityDays.trim(),
-                  free_shipping_min: cityFreeMin ? Number(cityFreeMin) : null,
-                });
-                setCityName('');
-                await refreshAll();
+                try {
+                  await api.saveCity({
+                    name: cityName.trim(),
+                    delivery_fee: Number(cityFee),
+                    estimated_days: cityDays.trim(),
+                    free_shipping_min: cityFreeMin ? Number(cityFreeMin) : null,
+                  });
+                  setCityName('');
+                  await refreshAll();
+                } catch (err) {
+                  handleMutationError(err, 'تعذر إضافة المدينة');
+                }
               }}
               className="grid grid-cols-2 sm:grid-cols-4 gap-2.5"
             >
@@ -874,8 +1057,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <button
                     type="button"
                     onClick={async () => {
-                      await api.deleteCity(c.id);
-                      await refreshAll();
+                      try {
+                        await api.deleteCity(c.id);
+                        await refreshAll();
+                      } catch (err) {
+                        handleMutationError(err, 'تعذر حذف المدينة');
+                      }
                     }}
                     className="text-[#8A847B] hover:text-red-700 p-1 cursor-pointer"
                   >
@@ -897,6 +1084,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           schemaTabs={data.schemaTabs}
           appsScriptTemplate={data.appsScriptTemplate}
           onRefresh={refreshAll}
+          onSessionExpired={handleSessionExpired}
+          onTokenChange={onTokenChange}
         />
       )}
 
@@ -907,8 +1096,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           categories={data.categories}
           currency={currency}
           onSave={async (payload, isEdit) => {
-            await api.saveProduct(payload, isEdit);
-            await refreshAll();
+            try {
+              await api.saveProduct(payload, isEdit);
+              await refreshAll();
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) {
+                setEditingProduct(undefined);
+                handleSessionExpired('انتهت جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+                return;
+              }
+              throw err;
+            }
           }}
           onClose={() => setEditingProduct(undefined)}
         />

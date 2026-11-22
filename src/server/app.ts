@@ -17,10 +17,14 @@ import type {
 import {
   claimInitialAdminPassword,
   createAdminToken,
+  ensurePersistedAuthLoaded,
+  getActiveAdminUsername,
   getAuthSetupState,
   requireAdmin,
-  verifyAdminPassword,
+  updateAdminCredentials,
+  verifyAdminCredentials,
 } from './auth.ts';
+import { BACKEND_CONFIG } from './backendConfig.ts';
 import {
   APPS_SCRIPT_TEMPLATE,
   deleteEntity,
@@ -42,20 +46,10 @@ import {
   sendTelegramBotReply,
   sendTelegramTestMessage,
 } from './telegramService.ts';
+import { normalizeImageUrl } from '../shared/imageUrl.ts';
 
 function sanitizeUrl(url: unknown): string {
-  const raw = String(url ?? '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('/')) return raw;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-      return raw;
-    }
-  } catch {
-    return '';
-  }
-  return '';
+  return normalizeImageUrl(url);
 }
 
 function normalizePhoneDigits(phone: string): string {
@@ -124,6 +118,8 @@ function buildIntegrationStatus(): IntegrationStatus {
     telegramWebhookSecretConfigured: Boolean(cfg.telegramWebhookSecret),
     hasEnvAdminPassword: auth.hasEnvAdminPassword,
     hasClaimedAdminPassword: auth.hasClaimedAdminPassword,
+    adminUsername: getActiveAdminUsername(),
+    hasFileAppsScriptUrl: Boolean(BACKEND_CONFIG.appsScriptUrl.trim()),
   };
 }
 
@@ -439,13 +435,15 @@ export function createApp() {
   });
 
   // --- Admin Auth Routes ---
-  app.get('/api/admin/auth-status', (_req, res) => {
+  app.get('/api/admin/auth-status', async (_req, res) => {
+    await ensurePersistedAuthLoaded();
     res.json(getAuthSetupState());
   });
 
-  app.post('/api/admin/setup', (req, res) => {
+  app.post('/api/admin/setup', async (req, res) => {
+    const username = String(req.body?.username || '');
     const password = String(req.body?.password || '');
-    const result = claimInitialAdminPassword(password);
+    const result = await claimInitialAdminPassword(username, password);
     if (!result.ok) {
       res.status(409).json({ error: result.error });
       return;
@@ -453,10 +451,12 @@ export function createApp() {
     res.json({ ok: true, token: createAdminToken() });
   });
 
-  app.post('/api/admin/login', (req, res) => {
+  app.post('/api/admin/login', async (req, res) => {
+    const username = String(req.body?.username || '');
     const password = String(req.body?.password || '');
-    if (!verifyAdminPassword(password)) {
-      res.status(401).json({ error: 'كلمة مرور الإدارة غير صحيحة.' });
+    const valid = await verifyAdminCredentials(username, password);
+    if (!valid) {
+      res.status(401).json({ error: 'اسم المستخدم أو رقم التسجيل غير صحيح.' });
       return;
     }
     res.json({ ok: true, token: createAdminToken() });
@@ -464,6 +464,18 @@ export function createApp() {
 
   // --- Protected Admin Routes ---
   app.use('/api/admin', requireAdmin);
+
+  app.post('/api/admin/auth/credentials', async (req, res) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newUsername = String(req.body?.newUsername || '');
+    const newPassword = String(req.body?.newPassword || '');
+    const result = await updateAdminCredentials(currentPassword, newUsername, newPassword);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, token: createAdminToken() });
+  });
 
   app.get('/api/admin/overview', async (_req, res) => {
     try {
