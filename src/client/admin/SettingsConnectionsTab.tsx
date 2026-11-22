@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  AlertTriangle,
   Check,
   CheckCircle2,
   Copy,
@@ -12,12 +11,7 @@ import {
   Sparkles,
   Webhook,
 } from 'lucide-react';
-import type {
-  IntegrationStatus,
-  SheetSchemaTab,
-  SheetsConnectionMode,
-  StoreSettings,
-} from '../../shared/types.ts';
+import type { IntegrationStatus, SheetSchemaTab, StoreSettings } from '../../shared/types.ts';
 import { ApiError, type createAdminApi } from '../lib/api.ts';
 
 interface SettingsConnectionsTabProps {
@@ -41,12 +35,8 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
   onSessionExpired,
   onTokenChange,
 }) => {
-  const [sheetsMode, setSheetsMode] = useState<SheetsConnectionMode>(integrationStatus.sheetsMode);
   const [appsScriptUrl, setAppsScriptUrl] = useState(integrationStatus.appsScriptUrl || '');
   const [appsScriptSecret, setAppsScriptSecret] = useState('');
-  const [sheetId, setSheetId] = useState('');
-  const [serviceAccountEmail, setServiceAccountEmail] = useState('');
-  const [serviceAccountKey, setServiceAccountKey] = useState('');
 
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramAdminChatId, setTelegramAdminChatId] = useState(integrationStatus.telegramAdminChatId || '');
@@ -87,10 +77,6 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
   };
 
   useEffect(() => {
-    setSheetsMode(integrationStatus.sheetsMode);
-  }, [integrationStatus.sheetsMode]);
-
-  useEffect(() => {
     if (integrationStatus.appsScriptUrl) {
       setAppsScriptUrl(integrationStatus.appsScriptUrl);
     }
@@ -113,41 +99,23 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
     section?: 'sheets' | 'telegram' | 'store' | 'cred'
   ) => {
     if (err instanceof ApiError && err.status === 401) {
-      onSessionExpired('انتهت صلاحية صلاحيات جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+      onSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
       return;
     }
     notify('err', err instanceof Error ? err.message : fallback, section);
   };
 
-  const persistSheetsInputsIfNeeded = async (): Promise<SheetsConnectionMode> => {
-    let effectiveMode: SheetsConnectionMode = sheetsMode;
-    if (effectiveMode === 'demo' && appsScriptUrl.trim()) {
-      effectiveMode = 'apps_script';
-      setSheetsMode('apps_script');
-    } else if (effectiveMode === 'demo' && sheetId.trim() && serviceAccountEmail.trim()) {
-      effectiveMode = 'service_account';
-      setSheetsMode('service_account');
-    }
-
+  const persistSheetsInputsIfNeeded = async () => {
     const hasPendingInputs =
-      effectiveMode !== integrationStatus.sheetsMode ||
       appsScriptUrl.trim() !== (integrationStatus.appsScriptUrl || '') ||
-      Boolean(appsScriptSecret.trim()) ||
-      Boolean(sheetId.trim()) ||
-      Boolean(serviceAccountEmail.trim()) ||
-      Boolean(serviceAccountKey.trim());
+      Boolean(appsScriptSecret.trim());
 
     if (hasPendingInputs) {
-      const payload: Parameters<typeof api.updateIntegrations>[0] = { sheetsMode: effectiveMode };
-      if (appsScriptUrl.trim()) payload.appsScriptUrl = appsScriptUrl.trim();
-      if (appsScriptSecret.trim()) payload.appsScriptSecret = appsScriptSecret.trim();
-      if (sheetId.trim()) payload.sheetId = sheetId.trim();
-      if (serviceAccountEmail.trim()) payload.serviceAccountEmail = serviceAccountEmail.trim();
-      if (serviceAccountKey.trim()) payload.serviceAccountPrivateKey = serviceAccountKey.trim();
-      await api.updateIntegrations(payload);
+      await api.updateIntegrations({
+        appsScriptUrl: appsScriptUrl.trim() || undefined,
+        appsScriptSecret: appsScriptSecret.trim() || undefined,
+      });
     }
-
-    return effectiveMode;
   };
 
   const handleSaveSheetsConfig = async (e: React.FormEvent) => {
@@ -156,32 +124,18 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
     setFeedback(null);
     setSheetsFeedback(null);
     try {
-      if (sheetsMode === 'apps_script' && !appsScriptUrl.trim() && !integrationStatus.appsScriptConfigured) {
-        notify('err', 'يرجى لصق رابط Google Apps Script (Web App URL) أولاً ثم الضغط على تأكيد وحفظ الربط.', 'sheets');
+      if (!appsScriptUrl.trim() && !integrationStatus.appsScriptConfigured) {
+        notify('err', 'يرجى لصق رابط Google Apps Script (Web App URL) أولاً.', 'sheets');
         return;
       }
-      const effectiveMode = await persistSheetsInputsIfNeeded();
-      if (effectiveMode === 'demo') {
-        await onRefresh();
-        notify('err', 'النظام مضبوط حالياً على الوضع التجريبي المحلي ولا يحفظ في Google Sheets.', 'sheets');
-        return;
-      }
-
+      await persistSheetsInputsIfNeeded();
       const testRes = await api.testSheets();
       await onRefresh();
-      if (!testRes.ok || testRes.isDemo) {
-        notify(
-          'err',
-          `تم حفظ الرابط، لكن تعذر تأكيد الاتصال المباشر بالشيت: ${testRes.message}`,
-          'sheets'
-        );
-      } else {
-        notify(
-          'ok',
-          `تم تأكيد الاتصال وحفظ الربط بنجاح ✓ (${testRes.message} · عدد المنتجات المقروءة: ${testRes.productCount ?? 0}).`,
-          'sheets'
-        );
-      }
+      notify(
+        'ok',
+        `تم تأكيد الاتصال وحفظ الربط بنجاح ✓ (${testRes.message} · عدد المنتجات: ${testRes.productCount ?? 0}).`,
+        'sheets'
+      );
     } catch (err) {
       handleApiError(err, 'تعذر حفظ إعدادات الربط', 'sheets');
     } finally {
@@ -197,11 +151,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       await persistSheetsInputsIfNeeded();
       const res = await api.testSheets();
       await onRefresh();
-      if (!res.ok || res.isDemo) {
-        notify('err', res.message, 'sheets');
-      } else {
-        notify('ok', `${res.message} (عدد المنتجات المقروءة: ${res.productCount ?? 0})`, 'sheets');
-      }
+      notify('ok', `${res.message} (الأوراق المكتشفة: ${res.tabsFound?.length ?? 0} · المنتجات: ${res.productCount ?? 0})`, 'sheets');
     } catch (err) {
       handleApiError(err, 'فشل اختبار الاتصال بـ Google Sheets', 'sheets');
     } finally {
@@ -217,11 +167,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       await persistSheetsInputsIfNeeded();
       const res = await api.initSheets(seedSampleData);
       await onRefresh();
-      if (!res.ok) {
-        notify('err', res.message, 'sheets');
-      } else {
-        notify('ok', res.message, 'sheets');
-      }
+      notify('ok', res.message, 'sheets');
     } catch (err) {
       handleApiError(err, 'تعذر تهيئة أوراق الشيت', 'sheets');
     } finally {
@@ -248,7 +194,11 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       setStoreForm(updatedStoreForm);
       await api.saveSettings(updatedStoreForm);
       await onRefresh();
-      notify('ok', 'تم حفظ بيانات بوت تيليجرام ومعرف البوت في الإعدادات بنجاح.', 'telegram');
+      notify(
+        'ok',
+        'تم حفظ بيانات بوت تيليجرام ومعرف الإداري داخل ورقة Settings في Google Sheets بنجاح.',
+        'telegram'
+      );
     } catch (err) {
       handleApiError(err, 'تعذر حفظ إعدادات تيليجرام', 'telegram');
     } finally {
@@ -299,11 +249,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       await api.saveSettings(cleanPayload);
       setTelegramBotUsername(cleanPayload.telegram_username);
       await onRefresh();
-      const destinationMsg =
-        integrationStatus.sheetsMode === 'demo'
-          ? 'تم حفظ إعدادات المتجر في الذاكرة المحلية الحالية (ملاحظة: فعّل ربط Google Sheets بالأعلى لحفظها دائماً في ورقة Settings).'
-          : 'تم حفظ إعدادات المتجر والدفع والتواصل في ورقة Settings بملف Google Sheets بنجاح.';
-      notify('ok', destinationMsg, 'store');
+      notify('ok', 'تم حفظ إعدادات المتجر والدفع والتواصل في ورقة Settings بملف Google Sheets بنجاح.', 'store');
     } catch (err) {
       handleApiError(err, 'تعذر حفظ إعدادات المتجر', 'store');
     } finally {
@@ -322,7 +268,7 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
       setCredCurrentPass('');
       setCredNewPass('');
       await onRefresh();
-      notify('ok', 'تم تحديث اسم المستخدم ورقم التسجيل الإداري وحفظهما بنجاح.', 'cred');
+      notify('ok', 'تم تحديث اسم المستخدم ورقم التسجيل وحفظهما في ورقة Admin بنجاح.', 'cred');
     } catch (err) {
       handleApiError(err, 'تعذر تحديث بيانات الدخول', 'cred');
     } finally {
@@ -339,8 +285,8 @@ export const SettingsConnectionsTab: React.FC<SettingsConnectionsTabProps> = ({
   const backendConfigSnippet = `import type { SheetsConnectionMode } from '../shared/types.ts';
 
 export const BACKEND_CONFIG = {
-  sheetsMode: '${appsScriptUrl.trim() ? 'apps_script' : sheetsMode}' as SheetsConnectionMode,
-  appsScriptUrl: '${appsScriptUrl.trim() || 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec'}',
+  sheetsMode: 'apps_script' as SheetsConnectionMode,
+  appsScriptUrl: '${appsScriptUrl.trim() || integrationStatus.appsScriptUrl || ''}',
   adminUsername: '${credNewUser.trim() || integrationStatus.adminUsername || 'admin'}',
   adminPasscode: '123456',
 };`;
@@ -365,7 +311,7 @@ export const BACKEND_CONFIG = {
         </div>
       )}
 
-      {/* 1. Google Sheets Connection Center */}
+      {/* 1. Google Apps Script Connection Center (Single Reliable Mode) */}
       <div className="rounded-xl border border-[#E5E2DC] bg-white p-6 space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E5E2DC] pb-4">
           <div className="flex items-center gap-3">
@@ -373,15 +319,13 @@ export const BACKEND_CONFIG = {
               <FileSpreadsheet className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-[#141413]">ربط قاعدة البيانات (Google Sheets)</h2>
+              <h2 className="text-lg font-bold text-[#141413]">ربط قاعدة البيانات (Google Apps Script فقط)</h2>
               <p className="text-xs text-[#6E6A63]">
-                الوضع الحالي:{' '}
-                <strong className="text-[#141413]">
-                  {integrationStatus.sheetsMode === 'apps_script'
-                    ? `Google Apps Script (${integrationStatus.appsScriptConfigured ? 'متصل' : 'غير مضبوط'})`
-                    : integrationStatus.sheetsMode === 'service_account'
-                      ? `Service Account (${integrationStatus.serviceAccountConfigured ? 'متصل' : 'غير مضبوط'})`
-                      : 'الوضع التجريبي السريع (في الذاكرة)'}
+                الحالة:{' '}
+                <strong className={integrationStatus.appsScriptConfigured ? 'text-emerald-700' : 'text-red-700'}>
+                  {integrationStatus.appsScriptConfigured
+                    ? `متصل دائماً (${integrationStatus.appsScriptUrlMasked})`
+                    : 'غير مضبوط'}
                 </strong>
               </p>
             </div>
@@ -403,178 +347,62 @@ export const BACKEND_CONFIG = {
               className="inline-flex items-center gap-1.5 rounded-lg bg-[#141413] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              <span>تهيئة أوراق الشيت تلقائياً + بيانات تجريبية</span>
+              <span>تهيئة أوراق الشيت الـ 10 + بيانات مبدئية</span>
             </button>
           </div>
         </div>
 
-        {integrationStatus.sheetsMode === 'demo' && (
-          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950 leading-relaxed">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
-            <div>
-              <strong>تنبيه مهم:</strong> الوضع الحالي هو <strong>الوضع التجريبي</strong>؛ أي منتج أو طلب جديد يُسجَّل الآن في ذاكرة الموقع فقط ولا يُرسل إلى Google Sheets.
-              اختر <strong>Google Apps Script</strong> أدناه وأدخل الرابط ثم اضغط <strong>«حفظ وضع الربط»</strong> أو <strong>«تهيئة أوراق الشيت تلقائياً»</strong> لتفعيل الحفظ الحقيقي.
-            </div>
-          </div>
-        )}
-
-        {/* Mode Selector */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <button
-            type="button"
-            onClick={() => setSheetsMode('apps_script')}
-            className={`rounded-xl border p-4 text-right transition-colors cursor-pointer ${
-              sheetsMode === 'apps_script'
-                ? 'border-[#141413] bg-[#FAF9F6] ring-1 ring-[#141413]'
-                : 'border-[#E5E2DC] hover:border-[#B8B2A8]'
-            }`}
-          >
-            <p className="text-sm font-bold text-[#141413]">1. Google Apps Script (موصى به)</p>
-            <p className="mt-1 text-xs text-[#6E6A63]">
-              مجاني 100%، لا يحتاج Google Cloud أو بطاقة بنكية، ويعمل خلال دقيقتين بالنسخ واللصق.
-            </p>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSheetsMode('service_account')}
-            className={`rounded-xl border p-4 text-right transition-colors cursor-pointer ${
-              sheetsMode === 'service_account'
-                ? 'border-[#141413] bg-[#FAF9F6] ring-1 ring-[#141413]'
-                : 'border-[#E5E2DC] hover:border-[#B8B2A8]'
-            }`}
-          >
-            <p className="text-sm font-bold text-[#141413]">2. Google Service Account (للمطورين)</p>
-            <p className="mt-1 text-xs text-[#6E6A63]">
-              خيار متقدم يتطلب حساب Google Cloud Console. إذا اخترت الطريقة 1 (Apps Script) فلا تحتاج لهذا الخيار نهائياً.
-            </p>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSheetsMode('demo')}
-            className={`rounded-xl border p-4 text-right transition-colors cursor-pointer ${
-              sheetsMode === 'demo'
-                ? 'border-[#141413] bg-[#FAF9F6] ring-1 ring-[#141413]'
-                : 'border-[#E5E2DC] hover:border-[#B8B2A8]'
-            }`}
-          >
-            <p className="text-sm font-bold text-[#141413]">3. الوضع التجريبي المحلي</p>
-            <p className="mt-1 text-xs text-[#6E6A63]">
-              لتجربة كامل مزايا المتجر ولوحة التحكم فوراً قبل ربط ملف Google Sheets الحقيقي.
-            </p>
-          </button>
-        </div>
-
         <form onSubmit={handleSaveSheetsConfig} className="space-y-4">
-          {sheetsMode === 'apps_script' && (
-            <div className="space-y-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-5">
-              <div className="space-y-1.5 text-xs text-[#44413C] leading-relaxed">
-                <p className="font-bold text-sm text-[#141413]">خطوات الربط المجاني عبر Google Apps Script (دقيقتان):</p>
-                <p>1. أنشئ ملف Google Sheets جديد في حسابك على Google Drive.</p>
-                <p>2. من القائمة العلوية اختر: <strong>الإضافات (Extensions) ← Apps Script</strong>.</p>
-                <p>3. انسخ الكود الجاهز بالأسفل والصقه بالكامل مكان الكود الموجود، ثم اضغط <strong>حفظ</strong>.</p>
-                <p>
-                  4. اضغط <strong>نشر (Deploy) ← نشر جديد (New deployment)</strong> ← اختر النوع <strong>تطبيق ويب (Web app)</strong>، واجعل الوصول <strong>أياً كان (Anyone)</strong>، ثم انسخ الرابط وضعه هنا.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E5E2DC] bg-white px-4 py-2.5">
-                <span className="text-xs font-semibold text-[#141413]">كود جسر Google Apps Script الجاهز</span>
-                <button
-                  type="button"
-                  onClick={copyAppsScript}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-[#141413] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
-                >
-                  {copiedScript ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  <span>{copiedScript ? 'تم نسخ الكود!' : 'نسخ كود Apps Script'}</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                    رابط Web App URL {integrationStatus.appsScriptUrlMasked && `(${integrationStatus.appsScriptUrlMasked})`}
-                  </label>
-                  <input
-                    value={appsScriptUrl}
-                    onChange={(e) => setAppsScriptUrl(e.target.value)}
-                    placeholder="https://script.google.com/macros/s/.../exec"
-                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                    المفتاح السري (Secret Token) — اختياري
-                  </label>
-                  <input
-                    type="password"
-                    value={appsScriptSecret}
-                    onChange={(e) => setAppsScriptSecret(e.target.value)}
-                    placeholder="اتركه فارغاً أو اكتب نفس SECRET_TOKEN في السكربت"
-                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm focus:border-[#141413] focus:outline-none"
-                  />
-                  <p className="mt-1.5 text-[11px] text-[#6E6A63] leading-relaxed">
-                    <strong>ما هذا؟</strong> كلمة مرور اختيارية من تأليفك (مثل <code>my-secret-2026</code>) تمنع أي شخص غريب من الكتابة في الشيت عبر رابط السكربت.
-                    إذا تركت السطر <code>SECRET_TOKEN = &quot;CHANGE_THIS_TO_YOUR_SECRET&quot;</code> كما هو داخل كود Apps Script فيمكنك ترك هذا الحقل <strong>فارغاً</strong>.
-                  </p>
-                </div>
-              </div>
+          <div className="space-y-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E5E2DC] bg-white px-4 py-2.5">
+              <span className="text-xs font-semibold text-[#141413]">كود جسر Google Apps Script الجاهز</span>
+              <button
+                type="button"
+                onClick={copyAppsScript}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#141413] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
+              >
+                {copiedScript ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                <span>{copiedScript ? 'تم نسخ الكود!' : 'نسخ كود Apps Script'}</span>
+              </button>
             </div>
-          )}
 
-          {sheetsMode === 'service_account' && (
-            <div className="space-y-3 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-5">
-              <p className="text-xs text-[#44413C] leading-relaxed">
-                أنشئ Service Account من Google Cloud Console مجاناً، فعّل Google Sheets API، وشارك ملف الشيت مع بريد حساب الخدمة بصلاحية <strong>محرر (Editor)</strong>.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                    معرف الشيت أو رابطه (Spreadsheet ID) {integrationStatus.sheetIdMasked && `(${integrationStatus.sheetIdMasked})`}
-                  </label>
-                  <input
-                    value={sheetId}
-                    onChange={(e) => setSheetId(e.target.value)}
-                    placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs..."
-                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                    بريد Service Account {integrationStatus.serviceAccountEmailMasked && `(${integrationStatus.serviceAccountEmailMasked})`}
-                  </label>
-                  <input
-                    value={serviceAccountEmail}
-                    onChange={(e) => setServiceAccountEmail(e.target.value)}
-                    placeholder="store-bot@project.iam.gserviceaccount.com"
-                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:outline-none"
-                  />
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[#44413C]">
+                  رابط Web App URL المعتمد
+                </label>
+                <input
+                  value={appsScriptUrl}
+                  onChange={(e) => setAppsScriptUrl(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm font-mono-num focus:border-[#141413] focus:outline-none"
+                />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-[#44413C]">المفتاح الخاص (Private Key PEM)</label>
-                <textarea
-                  rows={3}
-                  value={serviceAccountKey}
-                  onChange={(e) => setServiceAccountKey(e.target.value)}
-                  placeholder="-----BEGIN PRIVATE KEY-----..."
-                  className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-xs font-mono-num focus:border-[#141413] focus:outline-none"
+                <label className="mb-1 block text-xs font-medium text-[#44413C]">
+                  المفتاح السري (Secret Token) — اختياري
+                </label>
+                <input
+                  type="password"
+                  value={appsScriptSecret}
+                  onChange={(e) => setAppsScriptSecret(e.target.value)}
+                  placeholder="اتركه فارغاً أو اكتب نفس SECRET_TOKEN في السكربت"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3.5 py-2 text-sm focus:border-[#141413] focus:outline-none"
                 />
               </div>
             </div>
-          )}
+          </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-[#6E6A63]">
-              الحفظ هنا يعمل فوراً على السيرفر الحالي ويظهر الرابط محفوظاً دائماً عند عودتك لهذه الصفحة. لتعميم الرابط على جميع الأجهزة دون متغيرات بيئة في Vercel، ضعه داخل الملف الخلفي بالأسفل.
+              الرابط الدائم مدمج مباشرة في <span className="font-mono-num text-[#141413]">src/server/backendConfig.ts</span> ليعمل المتجر على جميع الأجهزة وVercel بدون وضع تجريبي.
             </p>
             <button
               type="submit"
               disabled={busy}
               className="rounded-lg bg-[#141413] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#2A2A28] disabled:opacity-60 cursor-pointer"
             >
-              {busy ? 'جاري التحقق والحفظ...' : 'تأكيد وحفظ الربط'}
+              {busy ? 'جاري التحقق...' : 'تأكيد واختبار الربط'}
             </button>
           </div>
 
@@ -590,23 +418,18 @@ export const BACKEND_CONFIG = {
             </div>
           )}
 
-          <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-3">
+          <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-xs font-bold text-[#141413]">
-                  الربط الدائم داخل الملف الخلفي (بدون متغيرات بيئة في Vercel)
-                </p>
-                <p className="text-[11px] text-[#6E6A63] mt-0.5">
-                  الصق هذا المقطع داخل الملف <span className="font-mono-num text-[#141413]">src/server/backendConfig.ts</span> قبل الرفع إلى GitHub لتفتح جميع الأجهزة المتجر وترسل الطلبات إلى الشيت تلقائياً.
-                </p>
-              </div>
+              <p className="text-xs font-bold text-[#141413]">
+                نسخة الملف الخلفي الحالية (<span className="font-mono-num">src/server/backendConfig.ts</span>)
+              </p>
               <button
                 type="button"
                 onClick={copyBackendConfigSnippet}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-[#E5E2DC] bg-white px-3 py-1.5 text-xs font-semibold text-[#141413] hover:bg-[#EFECE6] cursor-pointer"
               >
                 {copiedBackendCfg ? <Check className="h-3.5 w-3.5 text-emerald-700" /> : <Copy className="h-3.5 w-3.5" />}
-                <span>{copiedBackendCfg ? 'تم النسخ!' : 'نسخ إعدادات الملف الخلفي'}</span>
+                <span>{copiedBackendCfg ? 'تم النسخ!' : 'نسخ'}</span>
               </button>
             </div>
             <pre
@@ -615,19 +438,11 @@ export const BACKEND_CONFIG = {
             >
               {backendConfigSnippet}
             </pre>
-            <p className="text-[11px] text-[#6E6A63]">
-              حالة الملف الخلفي الحالية:{' '}
-              <strong className={integrationStatus.hasFileAppsScriptUrl ? 'text-emerald-700' : 'text-[#141413]'}>
-                {integrationStatus.hasFileAppsScriptUrl
-                  ? 'تم تضمين رابط Apps Script في الملف الخلفي ✓'
-                  : 'لم يُكتب رابط في src/server/backendConfig.ts بعد'}
-              </strong>
-            </p>
           </div>
         </form>
       </div>
 
-      {/* 2. Telegram Bot & Webhook Center */}
+      {/* 2. Telegram Bot & Webhook Center (Persisted in Google Sheets Settings tab) */}
       <div className="rounded-xl border border-[#E5E2DC] bg-white p-6 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E5E2DC] pb-4">
           <div className="flex items-center gap-3">
@@ -635,7 +450,7 @@ export const BACKEND_CONFIG = {
               <Send className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-[#141413]">ربط بوت تيليجرام الفوري (استلام الطلبات + أزرار التأكيد)</h2>
+              <h2 className="text-lg font-bold text-[#141413]">ربط بوت تيليجرام الفوري (يُحفظ في ورقة Settings بالشيت)</h2>
               <p className="text-xs text-[#6E6A63]">
                 الحالة:{' '}
                 <strong className={integrationStatus.telegramConfigured ? 'text-emerald-700' : 'text-amber-700'}>
@@ -656,16 +471,6 @@ export const BACKEND_CONFIG = {
             <CheckCircle2 className="h-4 w-4 text-[#0088cc]" />
             <span>إرسال رسالة تجريبية</span>
           </button>
-        </div>
-
-        <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 text-xs text-[#44413C] space-y-1.5 leading-relaxed">
-          <p className="font-bold text-[#141413]">من أين تحصل على البيانات الـ 3 الأساسية مجاناً؟</p>
-          <p>
-            1. <strong>Bot Token + Bot Username:</strong> افتح تيليجرام وابحث عن <strong>@BotFather</strong> وأرسل <code>/newbot</code>؛ سيطلب منك اسماً وينتهي بـ <code>bot</code> (هذا هو <strong>Bot Username</strong>)، ثم يعطيك رمز التوكن الطويل (<strong>Bot Token</strong>).
-          </p>
-          <p>
-            2. <strong>Private User ID:</strong> ابحث عن البوت <strong>@userinfobot</strong> في تيليجرام واضغط Start ليظهر لك رقم <code>Id</code> الخاص بحسابك، ثم أرسل <code>/start</code> لبوتك الجديد مرة واحدة ليتمكن من مراسلتك.
-          </p>
         </div>
 
         <form onSubmit={handleSaveTelegramConfig} className="space-y-4">
@@ -712,45 +517,37 @@ export const BACKEND_CONFIG = {
 
           <details className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 text-xs text-[#44413C]">
             <summary className="cursor-pointer font-bold text-[#141413]">
-              إعدادات متقدمة اختيارية: تفعيل أزرار الطلب داخل رسالة تيليجرام (Webhook)
+              إعدادات متقدمة اختيارية: تفعيل أزرار الطلب والتسجيل داخل رسالة تيليجرام (Webhook)
             </summary>
-            <div className="mt-3 space-y-3 border-t border-[#E5E2DC] pt-3 leading-relaxed">
-              <p>
-                <strong>ما هو Webhook؟</strong> رابط يربط تيليجرام بموقعك على Vercel لتستطيع الضغط على أزرار (تأكيد / تم الشحن / إلغاء) مباشرة من داخل رسالة تيليجرام فتتحدث حالة الطلب في Google Sheets فوراً. <em>(ملاحظة: وصول إشعارات الطلبات الفورية إلى تيليجرام يعمل 100% بدون الحاجة لتفعيل Webhook).</em>
-              </p>
-              <p>
-                <strong>ما هو Webhook Secret؟</strong> كلمة سر اختيارية من اختيارك يتأكد بها السيرفر أن الأوامر قادمة من تيليجرام فقط.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                <div>
-                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">Webhook Secret (اختياري)</label>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-[#E5E2DC] pt-3">
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-[#44413C]">Webhook Secret (اختياري)</label>
+                <input
+                  type="password"
+                  value={telegramWebhookSecret}
+                  onChange={(e) => setTelegramWebhookSecret(e.target.value)}
+                  placeholder="اتركه فارغاً أو اكتب كلمة سر من اختيارك"
+                  className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-[#44413C]">رابط تفعيل Webhook</label>
+                <div className="flex gap-2">
                   <input
-                    type="password"
-                    value={telegramWebhookSecret}
-                    onChange={(e) => setTelegramWebhookSecret(e.target.value)}
-                    placeholder="اتركه فارغاً أو اكتب كلمة سر من اختيارك"
-                    className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                    value={webhookUrl}
+                    onChange={(e) => setWebhookUrl(e.target.value)}
+                    placeholder="https://your-store.vercel.app/api/telegram/webhook"
+                    className="flex-1 rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-mono-num focus:border-[#141413] focus:outline-none"
                   />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[11px] font-medium text-[#44413C]">رابط تفعيل Webhook</label>
-                  <div className="flex gap-2">
-                    <input
-                      value={webhookUrl}
-                      onChange={(e) => setWebhookUrl(e.target.value)}
-                      placeholder="https://your-store.vercel.app/api/telegram/webhook"
-                      className="flex-1 rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs font-mono-num focus:border-[#141413] focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={handleSetWebhook}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#141413] bg-white px-3 py-2 text-xs font-semibold text-[#141413] hover:bg-[#141413] hover:text-white cursor-pointer whitespace-nowrap"
-                    >
-                      <Webhook className="h-3.5 w-3.5" />
-                      <span>تفعيل Webhook</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleSetWebhook}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#141413] bg-white px-3 py-2 text-xs font-semibold text-[#141413] hover:bg-[#141413] hover:text-white cursor-pointer whitespace-nowrap"
+                  >
+                    <Webhook className="h-3.5 w-3.5" />
+                    <span>تفعيل Webhook</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -767,7 +564,7 @@ export const BACKEND_CONFIG = {
               </p>
             ) : (
               <span className="text-xs text-[#6E6A63]">
-                بعد الحفظ اضغط «إرسال رسالة تجريبية» بالأعلى للتأكد من وصول الرسائل لحسابك.
+                يُحفظ التوكن ومعرف الإداري تلقائياً داخل ورقة Settings في Google Sheets ليعمل عبر جميع الأجهزة وVercel.
               </span>
             )}
             <button
@@ -775,7 +572,7 @@ export const BACKEND_CONFIG = {
               disabled={busy}
               className="rounded-lg bg-[#0088cc] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#0077b3] disabled:opacity-60 cursor-pointer"
             >
-              {busy ? 'جاري الحفظ...' : 'حفظ بيانات تيليجرام'}
+              {busy ? 'جاري الحفظ...' : 'حفظ بيانات تيليجرام في الشيت'}
             </button>
           </div>
         </form>
@@ -943,16 +740,20 @@ export const BACKEND_CONFIG = {
         )}
       </form>
 
-      {/* 4. Interactive Sheet Schema Reference */}
+      {/* 4. Interactive Sheet Schema Reference (10 Tabs) */}
       <div className="rounded-xl border border-[#E5E2DC] bg-white p-6 space-y-4">
         <div className="flex items-center gap-3 border-b border-[#E5E2DC] pb-4">
           <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] p-2.5 text-[#141413]">
             <Database className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-[#141413]">هيكل أوراق Google Sheets المعتمد (8 أوراق)</h2>
+            <h2 className="text-lg font-bold text-[#141413]">
+              هيكل أوراق Google Sheets المعتمد ({schemaTabs.length} أوراق)
+            </h2>
             <p className="text-xs text-[#6E6A63]">
-              تشمل أوراق المتجر الـ 7 بالإضافة إلى ورقة <span className="font-mono-num font-semibold">Admin</span> لتسجيل بيانات دخول الإدارة. اضغط التهيئة التلقائية بالأعلى لإنشائها دفعة واحدة.
+              تشمل أوراق المتجر، ورقة <span className="font-mono-num font-semibold">Admin</span> لتسجيل الدخول، وأوراق{' '}
+              <span className="font-mono-num font-semibold">Programs</span> و{' '}
+              <span className="font-mono-num font-semibold">Enrollments</span> للبرامج التدريبية.
             </p>
           </div>
         </div>
@@ -1001,16 +802,6 @@ export const BACKEND_CONFIG = {
               </div>
             </div>
           ))}
-
-        <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-2 text-xs text-[#44413C]">
-          <p className="font-bold text-[#141413] flex items-center gap-1.5">
-            <KeyRound className="h-4 w-4 text-[#B45309]" />
-            <span>متغيرات البيئة الاختيارية على Vercel (Environment Variables):</span>
-          </p>
-          <p className="font-mono-num text-[11px] leading-relaxed text-[#141413]">
-            ADMIN_USERNAME · ADMIN_PASSWORD · TELEGRAM_BOT_TOKEN · TELEGRAM_ADMIN_CHAT_ID · GOOGLE_APPS_SCRIPT_SECRET
-          </p>
-        </div>
       </div>
 
       {/* 5. Admin Credentials Management */}

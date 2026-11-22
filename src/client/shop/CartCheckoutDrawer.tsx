@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import type { CityZone, Order, PaymentMethod, Product, StoreSettings } from '../../shared/types.ts';
+import { resolveVariantUnitPrice } from '../../shared/variants.ts';
 import { storeApi } from '../lib/api.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 
@@ -84,7 +85,6 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
     setErrorMsg('');
   };
 
-  // Auto-fill Telegram Mini App user if available
   useEffect(() => {
     if (!open) return;
     const tg = (window as unknown as {
@@ -111,7 +111,10 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
 
   const distinctProductCount = new Set(items.map((i) => i.product.id)).size;
 
-  const subtotal = items.reduce((sum, entry) => sum + entry.product.price * entry.qty, 0);
+  const subtotal = items.reduce(
+    (sum, entry) => sum + resolveVariantUnitPrice(entry.product, entry.variant) * entry.qty,
+    0
+  );
   const discountAmount = appliedCoupon ? Math.min(subtotal, appliedCoupon.discount) : 0;
   const subtotalAfterDiscount = Math.max(0, subtotal - discountAmount);
 
@@ -241,56 +244,61 @@ export const CartCheckoutDrawer: React.FC<CartCheckoutDrawerProps> = ({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {items.map((entry) => (
-                    <div
-                      key={entry.key}
-                      className="flex gap-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-3"
-                    >
-                      <div className="w-24 shrink-0 overflow-hidden rounded-lg border border-[#E5E2DC]">
-                        <SafeImage src={entry.product.image_url} alt={entry.product.name} aspectClass="aspect-[4/3]" />
-                      </div>
-                      <div className="flex flex-1 flex-col justify-between">
-                        <div>
-                          <div className="flex items-start justify-between gap-2">
-                            <h4 className="text-sm font-semibold text-[#141413] leading-snug">{entry.product.name}</h4>
-                            <button
-                              type="button"
-                              onClick={() => onRemoveItem(entry.key)}
-                              className="text-[#8A847B] hover:text-red-600 p-1 cursor-pointer"
-                              aria-label="حذف"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                          {entry.variant && (
-                            <p className="mt-0.5 text-xs text-[#6E6A63]">{entry.variant}</p>
-                          )}
+                  {items.map((entry) => {
+                    const unitPrice = resolveVariantUnitPrice(entry.product, entry.variant);
+                    return (
+                      <div
+                        key={entry.key}
+                        className="flex gap-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-3"
+                      >
+                        <div className="w-24 shrink-0 overflow-hidden rounded-lg border border-[#E5E2DC]">
+                          <SafeImage src={entry.product.image_url} alt={entry.product.name} aspectClass="aspect-[4/3]" />
                         </div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center rounded-lg border border-[#E5E2DC] bg-white">
-                            <button
-                              type="button"
-                              onClick={() => onUpdateQty(entry.key, entry.qty - 1)}
-                              className="p-1.5 text-[#141413] hover:bg-[#F3F1EC] cursor-pointer"
-                            >
-                              <Minus className="h-3.5 w-3.5" />
-                            </button>
-                            <span className="w-8 text-center text-xs font-semibold tabular-nums">{entry.qty}</span>
-                            <button
-                              type="button"
-                              onClick={() => onUpdateQty(entry.key, Math.min(entry.product.stock, entry.qty + 1))}
-                              className="p-1.5 text-[#141413] hover:bg-[#F3F1EC] cursor-pointer"
-                            >
-                              <Plus className="h-3.5 w-3.5" />
-                            </button>
+                        <div className="flex flex-1 flex-col justify-between">
+                          <div>
+                            <div className="flex items-start justify-between gap-2">
+                              <h4 className="text-sm font-semibold text-[#141413] leading-snug">{entry.product.name}</h4>
+                              <button
+                                type="button"
+                                onClick={() => onRemoveItem(entry.key)}
+                                className="text-[#8A847B] hover:text-red-600 p-1 cursor-pointer"
+                                aria-label="حذف"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                            {entry.variant && (
+                              <p className="mt-0.5 text-xs text-[#6E6A63]">
+                                {entry.variant} · {unitPrice} {settings.currency}
+                              </p>
+                            )}
                           </div>
-                          <span className="text-sm font-bold text-[#141413] tabular-nums">
-                            {entry.product.price * entry.qty} {settings.currency}
-                          </span>
+                          <div className="mt-3 flex items-center justify-between">
+                            <div className="flex items-center rounded-lg border border-[#E5E2DC] bg-white">
+                              <button
+                                type="button"
+                                onClick={() => onUpdateQty(entry.key, entry.qty - 1)}
+                                className="p-1.5 text-[#141413] hover:bg-[#F3F1EC] cursor-pointer"
+                              >
+                                <Minus className="h-3.5 w-3.5" />
+                              </button>
+                              <span className="w-8 text-center text-xs font-semibold tabular-nums">{entry.qty}</span>
+                              <button
+                                type="button"
+                                onClick={() => onUpdateQty(entry.key, Math.min(entry.product.stock, entry.qty + 1))}
+                                className="p-1.5 text-[#141413] hover:bg-[#F3F1EC] cursor-pointer"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            <span className="text-sm font-bold text-[#141413] tabular-nums">
+                              {unitPrice * entry.qty} {settings.currency}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </>

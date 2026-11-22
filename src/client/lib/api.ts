@@ -3,24 +3,28 @@ import type {
   Category,
   CityZone,
   Coupon,
+  EnrollmentStatus,
   IntegrationStatus,
   Order,
   OrderStatus,
   Product,
+  ProgramEnrollment,
   SheetSchemaTab,
-  SheetsConnectionMode,
   StoreBootstrapData,
   StoreSettings,
+  TrainingProgram,
 } from '../../shared/types.ts';
 
 export interface AdminOverviewResponse {
   settings: StoreSettings;
   categories: Category[];
   products: Product[];
+  programs: TrainingProgram[];
   banners: Banner[];
   cities: CityZone[];
   coupons: Coupon[];
   orders: Order[];
+  enrollments: ProgramEnrollment[];
   integrationStatus: IntegrationStatus;
   schemaTabs: SheetSchemaTab[];
   appsScriptTemplate: string;
@@ -78,6 +82,22 @@ export const storeApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  createEnrollment: (payload: {
+    program_id: string;
+    student_name: string;
+    student_phone: string;
+    telegram_username: string;
+    payment_method: 'cod' | 'bank_transfer' | 'free';
+    bank_reference: string;
+    notes: string;
+  }) =>
+    requestJson<{ ok: boolean; enrollment: ProgramEnrollment; telegramNotified: boolean }>(
+      '/api/store/enrollments',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
   trackOrder: (orderId: string, phone: string) =>
     requestJson<{ ok: boolean; order: Order }>(
       `/api/store/orders/${encodeURIComponent(orderId)}?phone=${encodeURIComponent(phone)}`
@@ -89,12 +109,8 @@ export function createAdminApi(token: string) {
   return {
     overview: () => requestJson<AdminOverviewResponse>('/api/admin/overview', { headers }),
     updateIntegrations: (payload: {
-      sheetsMode?: SheetsConnectionMode;
       appsScriptUrl?: string;
       appsScriptSecret?: string;
-      sheetId?: string;
-      serviceAccountEmail?: string;
-      serviceAccountPrivateKey?: string;
       telegramBotToken?: string;
       telegramAdminChatId?: string;
       telegramWebhookSecret?: string;
@@ -105,7 +121,7 @@ export function createAdminApi(token: string) {
         body: JSON.stringify(payload),
       }),
     testSheets: () =>
-      requestJson<{ ok: boolean; mode: string; isDemo?: boolean; message: string; tabsFound?: string[]; productCount?: number }>(
+      requestJson<{ ok: boolean; mode: string; message: string; tabsFound?: string[]; productCount?: number }>(
         '/api/admin/sheets/test',
         { method: 'POST', headers }
       ),
@@ -140,6 +156,29 @@ export function createAdminApi(token: string) {
         method: 'DELETE',
         headers,
       }),
+    saveProgram: (program: Partial<TrainingProgram>, isEdit = false) =>
+      requestJson<{ ok: boolean; program: TrainingProgram }>(
+        isEdit && program.id ? `/api/admin/programs/${encodeURIComponent(program.id)}` : '/api/admin/programs',
+        {
+          method: isEdit ? 'PUT' : 'POST',
+          headers,
+          body: JSON.stringify(program),
+        }
+      ),
+    deleteProgram: (id: string) =>
+      requestJson<{ ok: boolean }>(`/api/admin/programs/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers,
+      }),
+    updateEnrollmentStatus: (id: string, status: EnrollmentStatus, notes?: string) =>
+      requestJson<{ ok: boolean; enrollment: ProgramEnrollment }>(
+        `/api/admin/enrollments/${encodeURIComponent(id)}`,
+        {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ status, notes }),
+        }
+      ),
     saveCategory: (cat: Partial<Category>) =>
       requestJson<{ ok: boolean; category: Category }>('/api/admin/categories', {
         method: 'POST',

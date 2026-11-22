@@ -1,4 +1,10 @@
-import type { Order, OrderStatus, StoreSettings } from '../shared/types.ts';
+import type {
+  EnrollmentStatus,
+  Order,
+  OrderStatus,
+  ProgramEnrollment,
+  StoreSettings,
+} from '../shared/types.ts';
 
 export interface TelegramRuntimeConfig {
   botToken: string;
@@ -14,11 +20,29 @@ const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   cancelled: '❌ ملغي',
 };
 
+const ENROLLMENT_STATUS_LABELS: Record<EnrollmentStatus, string> = {
+  pending: '⏳ قيد المراجعة',
+  confirmed: '✅ مقبول ومؤكد',
+  completed: '🎓 مكتمل',
+  cancelled: '❌ ملغي',
+};
+
 function escapeHtml(text: string): string {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function buildContactUrl(phone: string, telegramUsername?: string): string | undefined {
+  const cleanPhone = String(phone || '').replace(/[^\d]/g, '');
+  if (telegramUsername) {
+    return `https://t.me/${telegramUsername.replace(/^@/, '')}`;
+  }
+  if (cleanPhone) {
+    return `https://wa.me/${cleanPhone.startsWith('0') ? `966${cleanPhone.slice(1)}` : cleanPhone}`;
+  }
+  return undefined;
 }
 
 function formatTelegramMessage(order: Order, settings: StoreSettings): string {
@@ -73,12 +97,7 @@ function formatTelegramMessage(order: Order, settings: StoreSettings): string {
 }
 
 function buildOrderInlineKeyboard(order: Order) {
-  const cleanPhone = order.customer_phone.replace(/[^\d]/g, '');
-  const contactUrl = order.telegram_username
-    ? `https://t.me/${order.telegram_username.replace(/^@/, '')}`
-    : cleanPhone
-      ? `https://wa.me/${cleanPhone.startsWith('0') ? `966${cleanPhone.slice(1)}` : cleanPhone}`
-      : undefined;
+  const contactUrl = buildContactUrl(order.customer_phone, order.telegram_username);
 
   const rows: { text: string; callback_data?: string; url?: string }[][] = [
     [
@@ -93,6 +112,63 @@ function buildOrderInlineKeyboard(order: Order) {
 
   if (contactUrl) {
     rows.push([{ text: '💬 تواصل مباشر مع العميل', url: contactUrl }]);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+function formatEnrollmentTelegramMessage(enrollment: ProgramEnrollment, settings: StoreSettings): string {
+  const currency = settings.currency || 'ر.س';
+  const paymentLabel =
+    enrollment.payment_method === 'free'
+      ? '🆓 برنامج مجاني'
+      : enrollment.payment_method === 'bank_transfer'
+        ? '🏦 تحويل بنكي'
+        : '💵 السداد عند الحضور / التفعيل';
+
+  const lines = [
+    `🎓 <b>تسجيل جديد في برنامج تدريبي — ${escapeHtml(settings.store_name)}</b>`,
+    `رقم التسجيل: <code>${escapeHtml(enrollment.id)}</code>`,
+    `البرنامج: <b>${escapeHtml(enrollment.program_title)}</b>`,
+    `الحالة: <b>${ENROLLMENT_STATUS_LABELS[enrollment.status] || enrollment.status}</b>`,
+    ``,
+    `👤 <b>بيانات المتدرب:</b>`,
+    `• الاسم: ${escapeHtml(enrollment.student_name)}`,
+    `• الجوال: <code>${escapeHtml(enrollment.student_phone)}</code>`,
+  ];
+
+  if (enrollment.telegram_username) {
+    lines.push(`• تيليجرام المتدرب: ${escapeHtml(enrollment.telegram_username)}`);
+  }
+
+  lines.push(``, `💳 <b>السداد:</b> ${paymentLabel}`);
+  if (enrollment.bank_reference) {
+    lines.push(`• مرجع الحوالة: <code>${escapeHtml(enrollment.bank_reference)}</code>`);
+  }
+  lines.push(
+    `💰 <b>الرسوم:</b> ${enrollment.price_paid <= 0 ? 'مجاني' : `${enrollment.price_paid} ${escapeHtml(currency)}`}`
+  );
+
+  if (enrollment.notes) {
+    lines.push(``, `📝 <b>ملاحظات:</b> ${escapeHtml(enrollment.notes)}`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildEnrollmentInlineKeyboard(enrollment: ProgramEnrollment) {
+  const contactUrl = buildContactUrl(enrollment.student_phone, enrollment.telegram_username);
+
+  const rows: { text: string; callback_data?: string; url?: string }[][] = [
+    [
+      { text: '✅ تأكيد القبول', callback_data: `enroll_status:${enrollment.id}:confirmed` },
+      { text: '🎓 مكتمل', callback_data: `enroll_status:${enrollment.id}:completed` },
+    ],
+    [{ text: '❌ إلغاء التسجيل', callback_data: `enroll_status:${enrollment.id}:cancelled` }],
+  ];
+
+  if (contactUrl) {
+    rows.push([{ text: '💬 تواصل مباشر مع المتدرب', url: contactUrl }]);
   }
 
   return { inline_keyboard: rows };
@@ -128,6 +204,36 @@ export async function sendOrderToTelegram(
   }
 }
 
+export async function sendEnrollmentToTelegram(
+  config: TelegramRuntimeConfig,
+  enrollment: ProgramEnrollment,
+  settings: StoreSettings
+): Promise<{ sent: boolean; error?: string }> {
+  if (!config.botToken || !config.adminChatId) {
+    return { sent: false, error: 'Telegram not configured' };
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.adminChatId,
+        text: formatEnrollmentTelegramMessage(enrollment, settings),
+        parse_mode: 'HTML',
+        reply_markup: buildEnrollmentInlineKeyboard(enrollment),
+      }),
+    });
+    const data = (await res.json()) as { ok: boolean; description?: string };
+    if (!data.ok) {
+      return { sent: false, error: data.description || 'Telegram API error' };
+    }
+    return { sent: true };
+  } catch (err) {
+    return { sent: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 export async function sendTelegramTestMessage(
   config: TelegramRuntimeConfig,
   storeName: string
@@ -141,7 +247,7 @@ export async function sendTelegramTestMessage(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: config.adminChatId,
-        text: `✅ <b>تم ربط بوت تيليجرام بنجاح!</b>\nالمتجر: <b>${escapeHtml(storeName)}</b>\nستصلك هنا إشعارات الطلبات الجديدة مع أزرار التأكيد والشحن الفورية.`,
+        text: `✅ <b>تم ربط بوت تيليجرام بنجاح!</b>\nالمتجر: <b>${escapeHtml(storeName)}</b>\nستصلك هنا إشعارات الطلبات الجديدة وتسجيلات البرامج التدريبية مع أزرار التأكيد الفورية.`,
         parse_mode: 'HTML',
       }),
     });
@@ -229,6 +335,27 @@ export async function editTelegramOrderMessage(
       text: formatTelegramMessage(order, settings),
       parse_mode: 'HTML',
       reply_markup: buildOrderInlineKeyboard(order),
+    }),
+  }).catch(() => undefined);
+}
+
+export async function editTelegramEnrollmentMessage(
+  botToken: string,
+  chatId: number | string,
+  messageId: number,
+  enrollment: ProgramEnrollment,
+  settings: StoreSettings
+): Promise<void> {
+  if (!botToken) return;
+  await fetch(`https://api.telegram.org/bot${botToken}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: formatEnrollmentTelegramMessage(enrollment, settings),
+      parse_mode: 'HTML',
+      reply_markup: buildEnrollmentInlineKeyboard(enrollment),
     }),
   }).catch(() => undefined);
 }

@@ -1,8 +1,26 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, Heart, MessageCircle, Search, ShoppingBag, ShieldCheck, Truck } from 'lucide-react';
-import type { Product, StoreBootstrapData } from '../../shared/types.ts';
+import {
+  ArrowLeft,
+  Calendar,
+  Clock,
+  GraduationCap,
+  Heart,
+  MessageCircle,
+  Search,
+  ShoppingBag,
+  ShieldCheck,
+  Truck,
+} from 'lucide-react';
+import type { Product, StoreBootstrapData, TrainingFormat, TrainingProgram } from '../../shared/types.ts';
+import { getProductPriceSummary } from '../../shared/variants.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 import { PWAInstallButton } from '../components/PWAControls.tsx';
+
+const FORMAT_LABELS: Record<TrainingFormat, string> = {
+  online_live: 'عن بُعد مباشر',
+  in_person: 'حضوري',
+  recorded: 'مسجل بالكامل',
+};
 
 interface StorefrontViewProps {
   data: StoreBootstrapData;
@@ -10,6 +28,7 @@ interface StorefrontViewProps {
   onToggleFavorite: (productId: string) => void;
   onSelectProduct: (product: Product) => void;
   onQuickAdd: (product: Product) => void;
+  onSelectProgram: (program: TrainingProgram) => void;
 }
 
 export const StorefrontView: React.FC<StorefrontViewProps> = ({
@@ -18,10 +37,12 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   onToggleFavorite,
   onSelectProduct,
   onQuickAdd,
+  onSelectProgram,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'featured' | 'price_asc' | 'price_desc' | 'favorites'>('featured');
+  const [programFormatFilter, setProgramFormatFilter] = useState<'all' | TrainingFormat>('all');
 
   const heroBanner = data.banners[0];
   const tgUrl = data.settings.telegram_username
@@ -42,17 +63,23 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     });
 
     if (sortBy === 'price_asc') {
-      list = [...list].sort((a, b) => a.price - b.price);
+      list = [...list].sort((a, b) => getProductPriceSummary(a).minPrice - getProductPriceSummary(b).minPrice);
     } else if (sortBy === 'price_desc') {
-      list = [...list].sort((a, b) => b.price - a.price);
+      list = [...list].sort((a, b) => getProductPriceSummary(b).minPrice - getProductPriceSummary(a).minPrice);
     } else if (sortBy === 'featured') {
       list = [...list].sort((a, b) => Number(b.is_featured) - Number(a.is_featured));
     }
     return list;
   }, [data.products, selectedCategory, searchQuery, sortBy, favorites]);
 
+  const filteredPrograms = useMemo(() => {
+    const list = data.programs || [];
+    if (programFormatFilter === 'all') return list;
+    return list.filter((p) => p.format === programFormatFilter);
+  }, [data.programs, programFormatFilter]);
+
   return (
-    <div className="space-y-12 pb-16">
+    <div className="space-y-14 pb-16">
       {/* 1. Storefront Hero */}
       <section className="mx-auto max-w-6xl px-4 pt-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 overflow-hidden rounded-2xl border border-[#E5E2DC] bg-white">
@@ -80,6 +107,15 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 <span>تصفح المنتجات</span>
                 <ArrowLeft className="h-4 w-4" />
               </a>
+              {(data.programs || []).length > 0 && (
+                <a
+                  href="#programs"
+                  className="inline-flex items-center gap-2 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-4 py-2.5 text-sm font-semibold text-[#141413] hover:bg-[#EFECE6] transition-colors whitespace-nowrap shrink-0"
+                >
+                  <GraduationCap className="h-4 w-4 text-[#B45309]" />
+                  <span>البرامج التدريبية</span>
+                </a>
+              )}
               <PWAInstallButton variant="outline" />
             </div>
           </div>
@@ -125,7 +161,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       {/* 2. Catalog Filter & Product Grid */}
       <section id="catalog" className="mx-auto max-w-6xl px-4 space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E5E2DC] pb-4">
-          {/* Category Filter Tabs */}
           <div className="flex flex-wrap items-center gap-1 rounded-lg bg-[#F3F1EC] p-1">
             <button
               type="button"
@@ -152,7 +187,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
             ))}
           </div>
 
-          {/* Search & Sort */}
           <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
             <div className="relative flex-1 md:w-64">
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8A847B]" />
@@ -176,7 +210,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           </div>
         </div>
 
-        {/* 3-Column Product Grid */}
         {filteredProducts.length === 0 ? (
           <div className="rounded-xl border border-[#E5E2DC] bg-white py-16 text-center space-y-2">
             <p className="text-base font-semibold text-[#141413]">لا توجد منتجات مطابقة لبحثك</p>
@@ -198,6 +231,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
               const cat = data.categories.find((c) => c.id === product.category_id);
               const isFav = favorites.includes(product.id);
               const outOfStock = product.stock <= 0;
+              const priceSummary = getProductPriceSummary(product);
 
               return (
                 <article
@@ -234,6 +268,12 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         <span>{cat?.name || 'مختارات'}</span>
                         <span aria-hidden="true">·</span>
                         <span>{outOfStock ? 'نفد المخزون' : `متوفر (${product.stock})`}</span>
+                        {product.variants.length > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{product.variants.length} خيارات</span>
+                          </>
+                        )}
                       </div>
                       <h3 className="text-base font-semibold text-[#141413] leading-snug line-clamp-2">
                         {product.name}
@@ -243,13 +283,16 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#F3F1EC]">
                       <div className="flex items-baseline gap-2">
                         <span className="text-base font-bold text-[#141413] tabular-nums">
-                          {product.price} {data.settings.currency}
+                          {priceSummary.hasRange ? `ابتداءً من ${priceSummary.minPrice}` : priceSummary.defaultPrice}{' '}
+                          {data.settings.currency}
                         </span>
-                        {product.compare_at_price && product.compare_at_price > product.price && (
-                          <span className="text-xs text-[#8A847B] line-through tabular-nums">
-                            {product.compare_at_price}
-                          </span>
-                        )}
+                        {!priceSummary.hasRange &&
+                          product.compare_at_price &&
+                          product.compare_at_price > priceSummary.defaultPrice && (
+                            <span className="text-xs text-[#8A847B] line-through tabular-nums">
+                              {product.compare_at_price}
+                            </span>
+                          )}
                       </div>
 
                       <button
@@ -271,14 +314,130 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         )}
       </section>
 
-      {/* 3. Direct Telegram Support Banner */}
+      {/* 3. Training Programs Section */}
+      {(data.programs || []).length > 0 && (
+        <section id="programs" className="mx-auto max-w-6xl px-4 space-y-6">
+          <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#E5E2DC] pb-4">
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-[#B45309]">التأهيل والتطوير العملي</p>
+              <h2 className="text-2xl font-bold text-[#141413]">البرامج التدريبية والورش العملية</h2>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 rounded-lg bg-[#F3F1EC] p-1">
+              {(
+                [
+                  { id: 'all', label: 'جميع الأنماط' },
+                  { id: 'online_live', label: 'عن بُعد مباشر' },
+                  { id: 'in_person', label: 'حضوري' },
+                  { id: 'recorded', label: 'مسجل' },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setProgramFormatFilter(item.id)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    programFormatFilter === item.id
+                      ? 'bg-white text-[#141413] shadow-sm'
+                      : 'text-[#6E6A63] hover:text-[#141413]'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {filteredPrograms.length === 0 ? (
+            <div className="rounded-xl border border-[#E5E2DC] bg-white py-12 text-center text-sm text-[#6E6A63]">
+              لا توجد برامج تدريبية متاحة تحت هذا النمط حالياً.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredPrograms.map((program) => {
+                const soldOut = program.seats_left <= 0;
+                const isFree = program.price <= 0;
+                return (
+                  <article
+                    key={program.id}
+                    className="group flex flex-col overflow-hidden rounded-xl border border-[#E5E2DC] bg-white transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                  >
+                    <div className="cursor-pointer" onClick={() => onSelectProgram(program)}>
+                      <SafeImage
+                        src={program.image_url}
+                        alt={program.title}
+                        aspectClass="aspect-[16/10]"
+                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                      />
+                    </div>
+
+                    <div className="flex flex-1 flex-col justify-between p-5 gap-4">
+                      <div className="space-y-2 cursor-pointer" onClick={() => onSelectProgram(program)}>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#6E6A63]">
+                          <span>{program.category || 'تدريب'}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{FORMAT_LABELS[program.format]}</span>
+                          {program.instructor && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{program.instructor}</span>
+                            </>
+                          )}
+                        </div>
+                        <h3 className="text-base font-bold text-[#141413] leading-snug line-clamp-2">
+                          {program.title}
+                        </h3>
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-[#6E6A63] pt-1">
+                          {program.duration && (
+                            <span className="inline-flex items-center gap-1">
+                              <Clock className="h-3.5 w-3.5 text-[#B45309]" />
+                              <span>{program.duration}</span>
+                            </span>
+                          )}
+                          {program.start_date && (
+                            <span className="inline-flex items-center gap-1 tabular-nums">
+                              <Calendar className="h-3.5 w-3.5 text-[#B45309]" />
+                              <span>{program.start_date}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#F3F1EC]">
+                        <div>
+                          <span className="block text-base font-bold text-[#141413] tabular-nums">
+                            {isFree ? 'مجاني' : `${program.price} ${data.settings.currency}`}
+                          </span>
+                          <span className={`block text-[11px] tabular-nums ${soldOut ? 'text-red-700' : 'text-[#6E6A63]'}`}>
+                            {soldOut ? 'اكتملت المقاعد' : `متبقي ${program.seats_left} مقعد`}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => onSelectProgram(program)}
+                          className="rounded-lg bg-[#141413] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2A2A28] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          التفاصيل والتسجيل
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 4. Direct Telegram Support Banner */}
       {tgUrl && (
         <section className="mx-auto max-w-6xl px-4">
           <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#E5E2DC] bg-white p-6 md:p-8">
             <div className="space-y-1">
-              <h2 className="text-lg font-bold text-[#141413]">هل تحتاج مساعدة قبل الطلب؟</h2>
+              <h2 className="text-lg font-bold text-[#141413]">هل تحتاج مساعدة قبل الطلب أو التسجيل؟</h2>
               <p className="text-sm text-[#6E6A63]">
-                تواصل معنا مباشرة عبر تيليجرام للاستفسار عن المقاسات أو مواعيد التوصيل لمدينتك.
+                تواصل معنا مباشرة عبر تيليجرام للاستفسار عن المنتجات، مواعيد التوصيل، أو البرامج التدريبية.
               </p>
             </div>
             <a

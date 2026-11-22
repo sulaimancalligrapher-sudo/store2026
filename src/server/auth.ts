@@ -2,13 +2,12 @@ import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { BACKEND_CONFIG } from './backendConfig.ts';
 import {
-  getOrCreateLocalSessionSecret,
   getPersistedAdminAuthFromSheets,
   savePersistedAdminAuthToSheets,
   type PersistedAdminAuth,
 } from './sheetsAdapter.ts';
 
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 let activePersistedAuth: PersistedAdminAuth | null = null;
 
@@ -19,21 +18,23 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * Deterministic signing secret across Cloud Run container recycles and Vercel serverless invocations.
+ * This ensures valid admin tokens never randomly fail with 401 when a container restarts.
+ */
 function getSessionSecret(): string {
   const envSecret = process.env.SESSION_SECRET?.trim();
   if (envSecret) return envSecret;
 
-  const envPass = process.env.ADMIN_PASSWORD?.trim();
-  if (envPass) {
-    return crypto.createHmac('sha256', 'nukhba-serverless-session-key').update(envPass).digest('hex');
-  }
-
-  const localSecret = getOrCreateLocalSessionSecret();
-  if (localSecret) return localSecret;
+  const seedMaterial = [
+    process.env.ADMIN_PASSWORD?.trim() || BACKEND_CONFIG.adminPasscode.trim(),
+    process.env.GOOGLE_APPS_SCRIPT_URL?.trim() || BACKEND_CONFIG.appsScriptUrl.trim(),
+    BACKEND_CONFIG.adminUsername.trim(),
+  ].join('|');
 
   return crypto
-    .createHmac('sha256', 'nukhba-default-session-key')
-    .update(`${BACKEND_CONFIG.adminUsername}:${BACKEND_CONFIG.adminPasscode}`)
+    .createHmac('sha256', 'nukhba-permanent-session-secret-v2')
+    .update(seedMaterial)
     .digest('hex');
 }
 

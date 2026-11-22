@@ -1,6 +1,3 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   DEFAULT_BANNERS,
   DEFAULT_CATEGORIES,
@@ -8,6 +5,7 @@ import {
   DEFAULT_COUPONS,
   DEFAULT_ORDERS,
   DEFAULT_PRODUCTS,
+  DEFAULT_PROGRAMS,
   DEFAULT_SETTINGS,
   SHEET_SCHEMA_TABS,
 } from '../shared/seedData.ts';
@@ -16,142 +14,52 @@ import type {
   Category,
   CityZone,
   Coupon,
+  EnrollmentStatus,
   Order,
   OrderStatus,
   Product,
+  ProgramEnrollment,
   SheetsConnectionMode,
   StoreSettings,
+  TrainingFormat,
+  TrainingProgram,
 } from '../shared/types.ts';
 import type { TelegramRuntimeConfig } from './telegramService.ts';
 import { normalizeImageUrl } from '../shared/imageUrl.ts';
+import { parseProductVariants } from '../shared/variants.ts';
 import { BACKEND_CONFIG } from './backendConfig.ts';
 
 export interface StoreSnapshot {
   settings: StoreSettings;
   categories: Category[];
   products: Product[];
+  programs: TrainingProgram[];
   banners: Banner[];
   cities: CityZone[];
   coupons: Coupon[];
   orders: Order[];
+  enrollments: ProgramEnrollment[];
 }
 
 export interface RuntimeIntegrations {
   sheetsMode: SheetsConnectionMode;
   appsScriptUrl: string;
   appsScriptSecret: string;
-  sheetId: string;
-  serviceAccountEmail: string;
-  serviceAccountPrivateKey: string;
   telegramBotToken: string;
   telegramAdminChatId: string;
   telegramWebhookSecret: string;
 }
 
-const RUNTIME_FILE_PATH = path.resolve(process.cwd(), '.nukhba-runtime.json');
-
-interface PersistedRuntimeFile {
-  sheetsMode?: SheetsConnectionMode;
-  appsScriptUrl?: string;
-  appsScriptSecret?: string;
-  sheetId?: string;
-  serviceAccountEmail?: string;
-  serviceAccountPrivateKey?: string;
-  telegramBotToken?: string;
-  telegramAdminChatId?: string;
-  telegramWebhookSecret?: string;
-  sessionSecret?: string;
-}
-
-function readPersistedRuntimeFile(): PersistedRuntimeFile {
-  try {
-    if (fs.existsSync(RUNTIME_FILE_PATH)) {
-      const raw = fs.readFileSync(RUNTIME_FILE_PATH, 'utf8');
-      const parsed = JSON.parse(raw) as PersistedRuntimeFile;
-      if (parsed && typeof parsed === 'object') return parsed;
-    }
-  } catch {
-    // Ignore read errors (e.g. serverless or corrupted temp file)
-  }
-  return {};
-}
-
-const persistedOnDisk = readPersistedRuntimeFile();
-let persistedSessionSecret = persistedOnDisk.sessionSecret || '';
-
-function writePersistedRuntimeFile(): void {
-  try {
-    const payload: PersistedRuntimeFile = {
-      sheetsMode: runtimeConfig.sheetsMode,
-      appsScriptUrl: runtimeConfig.appsScriptUrl,
-      appsScriptSecret: runtimeConfig.appsScriptSecret,
-      sheetId: runtimeConfig.sheetId,
-      serviceAccountEmail: runtimeConfig.serviceAccountEmail,
-      serviceAccountPrivateKey: runtimeConfig.serviceAccountPrivateKey,
-      telegramBotToken: runtimeConfig.telegramBotToken,
-      telegramAdminChatId: runtimeConfig.telegramAdminChatId,
-      telegramWebhookSecret: runtimeConfig.telegramWebhookSecret,
-      sessionSecret: persistedSessionSecret,
-    };
-    fs.writeFileSync(RUNTIME_FILE_PATH, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
-  } catch {
-    // Ignore write errors on read-only filesystems (e.g. Vercel serverless)
-  }
-}
-
-export function getOrCreateLocalSessionSecret(): string {
-  if (persistedSessionSecret) return persistedSessionSecret;
-  try {
-    const generated = crypto.randomBytes(32).toString('hex');
-    persistedSessionSecret = generated;
-    writePersistedRuntimeFile();
-    if (fs.existsSync(RUNTIME_FILE_PATH)) {
-      return persistedSessionSecret;
-    }
-  } catch {
-    // Read-only filesystem
-  }
-  return '';
-}
-
-const initialAppsScriptUrl =
-  process.env.GOOGLE_APPS_SCRIPT_URL?.trim() ||
-  persistedOnDisk.appsScriptUrl?.trim() ||
-  BACKEND_CONFIG.appsScriptUrl.trim() ||
-  '';
-
-const initialSheetId =
-  process.env.GOOGLE_SHEET_ID?.trim() || persistedOnDisk.sheetId?.trim() || '';
-const initialServiceAccountEmail =
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() || persistedOnDisk.serviceAccountEmail?.trim() || '';
-
 const runtimeConfig: RuntimeIntegrations = {
-  sheetsMode:
-    (process.env.GOOGLE_SHEETS_MODE as SheetsConnectionMode) ||
-    persistedOnDisk.sheetsMode ||
-    (initialAppsScriptUrl
-      ? 'apps_script'
-      : initialSheetId && initialServiceAccountEmail
-        ? 'service_account'
-        : BACKEND_CONFIG.sheetsMode || 'demo'),
-  appsScriptUrl: initialAppsScriptUrl,
-  appsScriptSecret:
-    process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || persistedOnDisk.appsScriptSecret?.trim() || '',
-  sheetId: initialSheetId,
-  serviceAccountEmail: initialServiceAccountEmail,
-  serviceAccountPrivateKey: (
-    process.env.GOOGLE_PRIVATE_KEY ||
-    persistedOnDisk.serviceAccountPrivateKey ||
-    ''
-  )
-    .replace(/\\n/g, '\n')
-    .trim(),
-  telegramBotToken:
-    process.env.TELEGRAM_BOT_TOKEN?.trim() || persistedOnDisk.telegramBotToken?.trim() || '',
-  telegramAdminChatId:
-    process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() || persistedOnDisk.telegramAdminChatId?.trim() || '',
-  telegramWebhookSecret:
-    process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || persistedOnDisk.telegramWebhookSecret?.trim() || '',
+  sheetsMode: 'apps_script',
+  appsScriptUrl:
+    process.env.GOOGLE_APPS_SCRIPT_URL?.trim() ||
+    BACKEND_CONFIG.appsScriptUrl.trim() ||
+    '',
+  appsScriptSecret: process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || '',
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() || '',
+  telegramAdminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() || '',
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || '',
 };
 
 export interface PersistedAdminAuth {
@@ -161,23 +69,13 @@ export interface PersistedAdminAuth {
   plainPasscode?: string;
 }
 
-let persistedDemoAuth: PersistedAdminAuth | null = null;
 let persistedSheetAuthCache: { auth: PersistedAdminAuth; expiresAt: number } | null = null;
-
-const memoryStore: StoreSnapshot = {
-  settings: { ...DEFAULT_SETTINGS },
-  categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
-  products: DEFAULT_PRODUCTS.map((p) => ({ ...p, gallery_urls: [...p.gallery_urls], variants: [...p.variants] })),
-  banners: DEFAULT_BANNERS.map((b) => ({ ...b })),
-  cities: DEFAULT_CITIES.map((c) => ({ ...c })),
-  coupons: DEFAULT_COUPONS.map((c) => ({ ...c })),
-  orders: DEFAULT_ORDERS.map((o) => ({ ...o, items: o.items.map((i) => ({ ...i })) })),
-};
-
 let snapshotCache: { data: StoreSnapshot; expiresAt: number } | null = null;
 const CACHE_TTL_MS = 30_000;
 
-let cachedGoogleToken: { token: string; expiresAt: number } | null = null;
+let ensuredAdminTabInSession = false;
+let ensuredProgramsTabInSession = false;
+let ensuringTabsPromise: Promise<void> | null = null;
 
 export function invalidateCache(): void {
   snapshotCache = null;
@@ -194,6 +92,21 @@ export function getTelegramConfig(): TelegramRuntimeConfig {
     adminChatId: runtimeConfig.telegramAdminChatId,
     webhookSecret: runtimeConfig.telegramWebhookSecret,
   };
+}
+
+export async function getTelegramConfigAsync(forceFresh = false): Promise<TelegramRuntimeConfig> {
+  if (
+    forceFresh ||
+    !runtimeConfig.telegramBotToken ||
+    !runtimeConfig.telegramAdminChatId
+  ) {
+    try {
+      await getSnapshot(forceFresh);
+    } catch {
+      // Fall back cleanly to whatever is currently in runtimeConfig
+    }
+  }
+  return getTelegramConfig();
 }
 
 export function maskSecret(value: string, visibleStart = 4, visibleEnd = 4): string {
@@ -213,20 +126,9 @@ export function validateAppsScriptUrl(rawUrl: string): boolean {
   }
 }
 
-export function extractSpreadsheetId(input: string): string {
-  const trimmed = input.trim();
-  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (match && match[1]) return match[1];
-  return trimmed;
-}
-
 export function updateRuntimeConfig(partial: {
-  sheetsMode?: SheetsConnectionMode;
   appsScriptUrl?: string;
   appsScriptSecret?: string;
-  sheetId?: string;
-  serviceAccountEmail?: string;
-  serviceAccountPrivateKey?: string;
   telegramBotToken?: string;
   telegramAdminChatId?: string;
   telegramWebhookSecret?: string;
@@ -239,22 +141,12 @@ export function updateRuntimeConfig(partial: {
       };
     }
     runtimeConfig.appsScriptUrl = partial.appsScriptUrl.trim();
-  } else if (partial.appsScriptUrl === '') {
-    runtimeConfig.appsScriptUrl = '';
+    ensuredAdminTabInSession = false;
+    ensuredProgramsTabInSession = false;
   }
 
   if (partial.appsScriptSecret !== undefined && partial.appsScriptSecret !== '__KEEP__') {
     runtimeConfig.appsScriptSecret = partial.appsScriptSecret.trim();
-  }
-  if (partial.sheetId !== undefined) {
-    runtimeConfig.sheetId = extractSpreadsheetId(partial.sheetId);
-  }
-  if (partial.serviceAccountEmail !== undefined) {
-    runtimeConfig.serviceAccountEmail = partial.serviceAccountEmail.trim();
-  }
-  if (partial.serviceAccountPrivateKey !== undefined && partial.serviceAccountPrivateKey !== '__KEEP__') {
-    runtimeConfig.serviceAccountPrivateKey = partial.serviceAccountPrivateKey.replace(/\\n/g, '\n').trim();
-    cachedGoogleToken = null;
   }
   if (partial.telegramBotToken !== undefined && partial.telegramBotToken !== '__KEEP__') {
     runtimeConfig.telegramBotToken = partial.telegramBotToken.trim();
@@ -265,11 +157,8 @@ export function updateRuntimeConfig(partial: {
   if (partial.telegramWebhookSecret !== undefined && partial.telegramWebhookSecret !== '__KEEP__') {
     runtimeConfig.telegramWebhookSecret = partial.telegramWebhookSecret.trim();
   }
-  if (partial.sheetsMode) {
-    runtimeConfig.sheetsMode = partial.sheetsMode;
-  }
 
-  writePersistedRuntimeFile();
+  runtimeConfig.sheetsMode = 'apps_script';
   invalidateCache();
   return { ok: true };
 }
@@ -301,8 +190,14 @@ function parseList(val: unknown): string[] {
       const arr = JSON.parse(trimmed);
       if (Array.isArray(arr)) return arr.map((v) => String(v).trim()).filter(Boolean);
     } catch {
-      // fallback to comma split
+      // fallback to newline / comma split
     }
+  }
+  if (trimmed.includes('\n')) {
+    return trimmed
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return trimmed
     .split(/[،,]/)
@@ -325,12 +220,26 @@ function parseRowObjects(rows: string[][]): Record<string, string>[] {
     });
 }
 
+function hydrateTelegramFromSettingsMap(settingsMap: Record<string, string>): void {
+  if (!process.env.TELEGRAM_BOT_TOKEN?.trim() && settingsMap.__tg_bot_token) {
+    runtimeConfig.telegramBotToken = settingsMap.__tg_bot_token.trim();
+  }
+  if (!process.env.TELEGRAM_ADMIN_CHAT_ID?.trim() && settingsMap.__tg_admin_chat_id) {
+    runtimeConfig.telegramAdminChatId = settingsMap.__tg_admin_chat_id.trim();
+  }
+  if (!process.env.TELEGRAM_WEBHOOK_SECRET?.trim() && settingsMap.__tg_webhook_secret) {
+    runtimeConfig.telegramWebhookSecret = settingsMap.__tg_webhook_secret.trim();
+  }
+}
+
 function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
   const settingsRows = parseRowObjects(rawTabs.Settings || []);
   const settingsMap: Record<string, string> = {};
   for (const row of settingsRows) {
     if (row.key) settingsMap[row.key] = row.value ?? '';
   }
+
+  hydrateTelegramFromSettingsMap(settingsMap);
 
   const settings: StoreSettings = {
     store_name: settingsMap.store_name || DEFAULT_SETTINGS.store_name,
@@ -369,11 +278,36 @@ function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
     stock: toNum(r.stock, 0),
     image_url: normalizeImageUrl(r.image_url || ''),
     gallery_urls: parseList(r.gallery_urls).map(normalizeImageUrl).filter(Boolean),
-    variants: parseList(r.variants),
+    variants: parseProductVariants(r.variants),
     is_featured: toBool(r.is_featured, false),
     is_active: toBool(r.is_active, true),
     created_at: r.created_at || new Date().toISOString(),
   }));
+
+  const programs: TrainingProgram[] = parseRowObjects(rawTabs.Programs || []).map((r) => {
+    const rawFormat = String(r.format || 'online_live').trim();
+    const format: TrainingFormat =
+      rawFormat === 'in_person' || rawFormat === 'recorded' ? rawFormat : 'online_live';
+    return {
+      id: r.id,
+      title: r.title || '',
+      instructor: r.instructor || '',
+      category: r.category || 'عام',
+      format,
+      duration: r.duration || '',
+      start_date: r.start_date || '',
+      seats_total: Math.max(0, toNum(r.seats_total, 20)),
+      seats_left: Math.max(0, toNum(r.seats_left, 0)),
+      price: Math.max(0, toNum(r.price, 0)),
+      compare_at_price: r.compare_at_price ? toNum(r.compare_at_price, 0) || null : null,
+      image_url: normalizeImageUrl(r.image_url || ''),
+      syllabus: parseList(r.syllabus),
+      description: r.description || '',
+      is_featured: toBool(r.is_featured, true),
+      is_active: toBool(r.is_active, true),
+      created_at: r.created_at || new Date().toISOString(),
+    };
+  });
 
   const banners: Banner[] = parseRowObjects(rawTabs.Banners || []).map((r) => ({
     id: r.id,
@@ -438,10 +372,31 @@ function rowsToSnapshot(rawTabs: Record<string, string[][]>): StoreSnapshot {
     })
     .reverse();
 
-  return { settings, categories, products, banners, cities, coupons, orders };
+  const enrollments: ProgramEnrollment[] = parseRowObjects(rawTabs.Enrollments || [])
+    .map((r) => ({
+      id: r.id,
+      created_at: r.created_at || new Date().toISOString(),
+      program_id: r.program_id || '',
+      program_title: r.program_title || '',
+      student_name: r.student_name || '',
+      student_phone: r.student_phone || '',
+      telegram_username: r.telegram_username || '',
+      payment_method: (
+        r.payment_method === 'bank_transfer' || r.payment_method === 'free' ? r.payment_method : 'cod'
+      ) as ProgramEnrollment['payment_method'],
+      bank_reference: r.bank_reference || '',
+      price_paid: toNum(r.price_paid, 0),
+      status: (['pending', 'confirmed', 'completed', 'cancelled'].includes(r.status)
+        ? r.status
+        : 'pending') as EnrollmentStatus,
+      notes: r.notes || '',
+    }))
+    .reverse();
+
+  return { settings, categories, products, programs, banners, cities, coupons, orders, enrollments };
 }
 
-function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
+function buildSeedRowsForTab(tabName: string): string[][] {
   const schema = SHEET_SCHEMA_TABS.find((t) => t.tabName === tabName);
   if (!schema) return [];
   const header = schema.columns.map((c) => c.name);
@@ -462,15 +417,22 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
       bank_transfer_enabled: 'تفعيل التحويل البنكي',
       announcement_text: 'شريط الإعلانات العلوي',
     };
-    return [
-      header,
-      ...Object.entries(snap.settings).map(([k, v]) => [k, String(v ?? ''), labels[k] || k]),
-    ];
+    const baseRows = Object.entries(DEFAULT_SETTINGS).map(([k, v]) => [k, String(v ?? ''), labels[k] || k]);
+    if (runtimeConfig.telegramBotToken) {
+      baseRows.push(['__tg_bot_token', runtimeConfig.telegramBotToken, 'رمز بوت تيليجرام (خاص بالسيرفر)']);
+    }
+    if (runtimeConfig.telegramAdminChatId) {
+      baseRows.push(['__tg_admin_chat_id', runtimeConfig.telegramAdminChatId, 'معرف الإداري في تيليجرام']);
+    }
+    if (runtimeConfig.telegramWebhookSecret) {
+      baseRows.push(['__tg_webhook_secret', runtimeConfig.telegramWebhookSecret, 'كلمة سر Webhook تيليجرام']);
+    }
+    return [header, ...baseRows];
   }
   if (tabName === 'Categories') {
     return [
       header,
-      ...snap.categories.map((c) => [
+      ...DEFAULT_CATEGORIES.map((c) => [
         c.id,
         c.name,
         c.slug,
@@ -483,7 +445,7 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
   if (tabName === 'Products') {
     return [
       header,
-      ...snap.products.map((p) => [
+      ...DEFAULT_PRODUCTS.map((p) => [
         p.id,
         p.category_id,
         p.name,
@@ -501,10 +463,34 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
       ]),
     ];
   }
+  if (tabName === 'Programs') {
+    return [
+      header,
+      ...DEFAULT_PROGRAMS.map((p) => [
+        p.id,
+        p.title,
+        p.instructor,
+        p.category,
+        p.format,
+        p.duration,
+        p.start_date,
+        String(p.seats_total),
+        String(p.seats_left),
+        String(p.price),
+        p.compare_at_price !== null ? String(p.compare_at_price) : '',
+        p.image_url,
+        JSON.stringify(p.syllabus),
+        p.description,
+        p.is_featured ? 'TRUE' : 'FALSE',
+        p.is_active ? 'TRUE' : 'FALSE',
+        p.created_at,
+      ]),
+    ];
+  }
   if (tabName === 'Banners') {
     return [
       header,
-      ...snap.banners.map((b) => [
+      ...DEFAULT_BANNERS.map((b) => [
         b.id,
         b.title,
         b.subtitle,
@@ -518,7 +504,7 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
   if (tabName === 'Cities') {
     return [
       header,
-      ...snap.cities.map((c) => [
+      ...DEFAULT_CITIES.map((c) => [
         c.id,
         c.name,
         String(c.delivery_fee),
@@ -531,7 +517,7 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
   if (tabName === 'Coupons') {
     return [
       header,
-      ...snap.coupons.map((c) => [
+      ...DEFAULT_COUPONS.map((c) => [
         c.id,
         c.code,
         c.discount_type,
@@ -547,7 +533,7 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
   if (tabName === 'Orders') {
     return [
       header,
-      ...snap.orders.map((o) => [
+      ...DEFAULT_ORDERS.map((o) => [
         o.id,
         o.created_at,
         o.customer_name,
@@ -569,60 +555,11 @@ function buildSeedRowsForTab(tabName: string, snap: StoreSnapshot): string[][] {
     ];
   }
   if (tabName === 'Admin') {
-    const activeUser = persistedDemoAuth?.username || BACKEND_CONFIG.adminUsername || 'admin';
-    const activePass =
-      persistedDemoAuth?.hash && persistedDemoAuth?.salt
-        ? `scrypt:${persistedDemoAuth.salt}:${persistedDemoAuth.hash}`
-        : persistedDemoAuth?.plainPasscode || BACKEND_CONFIG.adminPasscode || '123456';
+    const activeUser = BACKEND_CONFIG.adminUsername || 'admin';
+    const activePass = BACKEND_CONFIG.adminPasscode || '123456';
     return [header, ['adm_1', activeUser, activePass, 'admin', 'TRUE', new Date().toISOString()]];
   }
   return [header];
-}
-
-// --- Google Service Account JWT Auth ---
-async function getServiceAccountToken(): Promise<string> {
-  if (cachedGoogleToken && cachedGoogleToken.expiresAt > Date.now() + 60_000) {
-    return cachedGoogleToken.token;
-  }
-  if (!runtimeConfig.serviceAccountEmail || !runtimeConfig.serviceAccountPrivateKey) {
-    throw new Error('بيانات Service Account غير مكتملة.');
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-  const claim = Buffer.from(
-    JSON.stringify({
-      iss: runtimeConfig.serviceAccountEmail,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      aud: 'https://oauth2.googleapis.com/token',
-      exp: now + 3600,
-      iat: now,
-    })
-  ).toString('base64url');
-
-  const unsigned = `${header}.${claim}`;
-  const sign = crypto.createSign('RSA-SHA256');
-  sign.update(unsigned);
-  const signature = sign.sign(runtimeConfig.serviceAccountPrivateKey, 'base64url');
-  const jwt = `${unsigned}.${signature}`;
-
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: jwt,
-    }),
-  });
-  const data = (await res.json()) as { access_token?: string; error_description?: string; error?: string };
-  if (!res.ok || !data.access_token) {
-    throw new Error(data.error_description || data.error || 'فشل توثيق Google Service Account');
-  }
-  cachedGoogleToken = {
-    token: data.access_token,
-    expiresAt: Date.now() + 50 * 60 * 1000,
-  };
-  return data.access_token;
 }
 
 async function callAppsScript<T = Record<string, unknown>>(action: string, payload?: unknown): Promise<T> {
@@ -654,119 +591,59 @@ async function callAppsScript<T = Record<string, unknown>>(action: string, paylo
   return (json.data !== undefined ? json.data : json) as T;
 }
 
-async function fetchServiceAccountAllTabs(): Promise<Record<string, string[][]>> {
-  const token = await getServiceAccountToken();
-  const sheetId = runtimeConfig.sheetId;
-  if (!sheetId) throw new Error('يرجى إدخال معرف ملف الشيت (Spreadsheet ID).');
-  const ranges = SHEET_SCHEMA_TABS.map((t) => `ranges=${encodeURIComponent(`${t.tabName}!A1:Z1000`)}`).join('&');
-  const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values:batchGet?${ranges}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const json = (await res.json()) as {
-    valueRanges?: { range?: string; values?: string[][] }[];
-    error?: { message?: string };
-  };
-  if (!res.ok) {
-    throw new Error(json.error?.message || 'تعذر قراءة ملف Google Sheet. تأكد من مشاركة الشيت مع بريد Service Account.');
+/**
+ * Auto-creates missing Admin and Programs tabs safely without modifying existing data.
+ */
+async function ensureMissingRequiredTabs(rawTabs: Record<string, string[][]>): Promise<void> {
+  const needsAdmin = (!rawTabs.Admin || rawTabs.Admin.length === 0) && !ensuredAdminTabInSession;
+  const needsPrograms = (!rawTabs.Programs || rawTabs.Programs.length === 0) && !ensuredProgramsTabInSession;
+
+  if (!needsAdmin && !needsPrograms) return;
+
+  if (ensuringTabsPromise) {
+    await ensuringTabsPromise;
+    return;
   }
-  const out: Record<string, string[][]> = {};
-  for (const tab of SHEET_SCHEMA_TABS) {
-    const found = json.valueRanges?.find((vr) => vr.range?.startsWith(`${tab.tabName}!`) || vr.range?.startsWith(`'${tab.tabName}'!`));
-    out[tab.tabName] = found?.values || [];
-  }
-  return out;
-}
 
-async function upsertRowServiceAccount(tabName: string, keyField: string, rowObj: Record<string, string>): Promise<void> {
-  const token = await getServiceAccountToken();
-  const sheetId = runtimeConfig.sheetId;
-  const readRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(`${tabName}!A1:Z1000`)}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const readJson = (await readRes.json()) as { values?: string[][] };
-  const rows = readJson.values || [];
-  const schema = SHEET_SCHEMA_TABS.find((t) => t.tabName === tabName);
-  const headers = rows[0] && rows[0].length > 0 ? rows[0] : schema?.columns.map((c) => c.name) || Object.keys(rowObj);
-
-  const keyIdx = headers.indexOf(keyField);
-  const targetVal = rowObj[keyField];
-  const rowArray = headers.map((h) => rowObj[h] ?? '');
-
-  let foundRowIndex = -1;
-  if (keyIdx >= 0 && targetVal) {
-    for (let i = 1; i < rows.length; i++) {
-      if (String(rows[i]?.[keyIdx] ?? '') === targetVal) {
-        foundRowIndex = i + 1; // 1-indexed in Sheets
-        break;
+  ensuringTabsPromise = (async () => {
+    try {
+      if (needsAdmin) {
+        ensuredAdminTabInSession = true;
+        const adminRow = {
+          id: 'adm_1',
+          username: BACKEND_CONFIG.adminUsername || 'admin',
+          passcode: BACKEND_CONFIG.adminPasscode || '123456',
+          role: 'admin',
+          is_active: 'TRUE',
+          updated_at: new Date().toISOString(),
+        };
+        await callAppsScript('upsert', { tab: 'Admin', keyField: 'id', row: adminRow });
+        rawTabs.Admin = [
+          ['id', 'username', 'passcode', 'role', 'is_active', 'updated_at'],
+          [adminRow.id, adminRow.username, adminRow.passcode, adminRow.role, adminRow.is_active, adminRow.updated_at],
+        ];
       }
+
+      if (needsPrograms) {
+        ensuredProgramsTabInSession = true;
+        const header =
+          SHEET_SCHEMA_TABS.find((t) => t.tabName === 'Programs')?.columns.map((c) => c.name) || [];
+        const createdRows: string[][] = [header];
+        for (const prog of DEFAULT_PROGRAMS) {
+          const serialized = serializeEntityRow('Programs', prog);
+          await callAppsScript('upsert', { tab: 'Programs', keyField: 'id', row: serialized });
+          createdRows.push(header.map((col) => serialized[col] ?? ''));
+        }
+        rawTabs.Programs = createdRows;
+      }
+    } catch {
+      // Non-fatal: retry cleanly on subsequent request
+    } finally {
+      ensuringTabsPromise = null;
     }
-  }
+  })();
 
-  if (foundRowIndex > 0) {
-    await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(`${tabName}!A${foundRowIndex}`)}?valueInputOption=USER_ENTERED`,
-      {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values: [rowArray] }),
-      }
-    );
-  } else {
-    await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(`${tabName}!A1`)}:append?valueInputOption=USER_ENTERED`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values: [rowArray] }),
-      }
-    );
-  }
-}
-
-async function deleteRowServiceAccount(tabName: string, keyField: string, keyValue: string): Promise<void> {
-  const token = await getServiceAccountToken();
-  const sheetId = runtimeConfig.sheetId;
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}?fields=sheets.properties`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const meta = (await metaRes.json()) as { sheets?: { properties: { sheetId: number; title: string } }[] };
-  const sheetProp = meta.sheets?.find((s) => s.properties.title === tabName)?.properties;
-  if (!sheetProp) return;
-
-  const readRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(`${tabName}!A1:Z1000`)}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const readJson = (await readRes.json()) as { values?: string[][] };
-  const rows = readJson.values || [];
-  if (rows.length < 2) return;
-  const keyIdx = rows[0].indexOf(keyField);
-  if (keyIdx < 0) return;
-
-  const rowIdx = rows.findIndex((r, i) => i > 0 && String(r[keyIdx] ?? '') === keyValue);
-  if (rowIdx < 1) return;
-
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}:batchUpdate`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: [
-        {
-          deleteDimension: {
-            range: {
-              sheetId: sheetProp.sheetId,
-              dimension: 'ROWS',
-              startIndex: rowIdx,
-              endIndex: rowIdx + 1,
-            },
-          },
-        },
-      ],
-    }),
-  });
+  await ensuringTabsPromise;
 }
 
 // --- Public Adapter Operations ---
@@ -775,45 +652,23 @@ export async function getSnapshot(forceFresh = false): Promise<StoreSnapshot> {
     return snapshotCache.data;
   }
 
-  let data: StoreSnapshot;
-  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    const rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
-    data = rowsToSnapshot(rawTabs);
-  } else if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId && runtimeConfig.serviceAccountEmail) {
-    const rawTabs = await fetchServiceAccountAllTabs();
-    data = rowsToSnapshot(rawTabs);
-  } else {
-    data = memoryStore;
-  }
+  const rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
+  await ensureMissingRequiredTabs(rawTabs);
+  const data = rowsToSnapshot(rawTabs);
 
   snapshotCache = { data, expiresAt: Date.now() + CACHE_TTL_MS };
   return data;
 }
 
 export async function getPersistedAdminAuthFromSheets(forceFresh = false): Promise<PersistedAdminAuth | null> {
-  if (runtimeConfig.sheetsMode === 'demo') {
-    return persistedDemoAuth;
-  }
-
   if (!forceFresh && persistedSheetAuthCache && persistedSheetAuthCache.expiresAt > Date.now()) {
     return persistedSheetAuthCache.auth;
   }
 
   try {
-    let rawTabs: Record<string, string[][]> = {};
-    if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-      rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
-    } else if (
-      runtimeConfig.sheetsMode === 'service_account' &&
-      runtimeConfig.sheetId &&
-      runtimeConfig.serviceAccountEmail
-    ) {
-      rawTabs = await fetchServiceAccountAllTabs();
-    } else {
-      return null;
-    }
+    const rawTabs = await callAppsScript<Record<string, string[][]>>('getAll');
+    await ensureMissingRequiredTabs(rawTabs);
 
-    // 1. Prefer dedicated 'Admin' sheet tab
     const adminRows = parseRowObjects(rawTabs.Admin || []);
     const activeAdmin = adminRows.find(
       (r) => toBool(r.is_active, true) && String(r.username || '').trim() && String(r.passcode || '').trim()
@@ -845,7 +700,6 @@ export async function getPersistedAdminAuthFromSheets(forceFresh = false): Promi
       return parsedAuth;
     }
 
-    // 2. Fallback to legacy __admin_* keys in Settings sheet
     const settingsRows = parseRowObjects(rawTabs.Settings || []);
     const map: Record<string, string> = {};
     for (const r of settingsRows) {
@@ -869,11 +723,6 @@ export async function getPersistedAdminAuthFromSheets(forceFresh = false): Promi
 }
 
 export async function savePersistedAdminAuthToSheets(auth: PersistedAdminAuth): Promise<void> {
-  if (runtimeConfig.sheetsMode === 'demo') {
-    persistedDemoAuth = auth;
-    return;
-  }
-
   persistedSheetAuthCache = { auth, expiresAt: Date.now() + CACHE_TTL_MS };
   const serializedPasscode =
     auth.hash && auth.salt ? `scrypt:${auth.salt}:${auth.hash}` : auth.plainPasscode || '';
@@ -887,131 +736,73 @@ export async function savePersistedAdminAuthToSheets(auth: PersistedAdminAuth): 
     updated_at: new Date().toISOString(),
   };
 
-  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    await callAppsScript('upsert', { tab: 'Admin', keyField: 'id', row: adminRow });
-    return;
-  }
+  await callAppsScript('upsert', { tab: 'Admin', keyField: 'id', row: adminRow });
+}
 
-  if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
-    await upsertRowServiceAccount('Admin', 'id', adminRow);
+export async function saveTelegramConfigToSheets(config: TelegramRuntimeConfig): Promise<void> {
+  invalidateCache();
+  runtimeConfig.telegramBotToken = config.botToken;
+  runtimeConfig.telegramAdminChatId = config.adminChatId;
+  runtimeConfig.telegramWebhookSecret = config.webhookSecret;
+
+  const rows = [
+    { key: '__tg_bot_token', value: config.botToken, label: 'رمز بوت تيليجرام (خاص بالسيرفر)' },
+    { key: '__tg_admin_chat_id', value: config.adminChatId, label: 'معرف الإداري في تيليجرام' },
+    { key: '__tg_webhook_secret', value: config.webhookSecret, label: 'كلمة سر Webhook تيليجرام' },
+  ];
+
+  for (const row of rows) {
+    await callAppsScript('upsert', { tab: 'Settings', keyField: 'key', row });
   }
 }
 
 export async function testSheetsConnection(): Promise<{
   ok: boolean;
   mode: SheetsConnectionMode;
-  isDemo?: boolean;
   message: string;
   tabsFound?: string[];
   productCount?: number;
 }> {
-  if (runtimeConfig.sheetsMode === 'demo') {
-    return {
-      ok: false,
-      mode: 'demo',
-      isDemo: true,
-      message:
-        'النظام يعمل حالياً بالوضع التجريبي المؤقت (لا يحفظ في Google Sheets). اختر Google Apps Script وأدخل الرابط ثم اضغط حفظ واختبار الاتصال.',
-      tabsFound: SHEET_SCHEMA_TABS.map((t) => t.tabName),
-      productCount: memoryStore.products.length,
-    };
-  }
-
-  if (runtimeConfig.sheetsMode === 'apps_script') {
-    const res = await callAppsScript<{ tabs?: string[]; spreadsheetName?: string }>('test');
-    const snap = await getSnapshot(true);
-    return {
-      ok: true,
-      mode: 'apps_script',
-      message: `تم الاتصال بنجاح عبر Google Apps Script${res.spreadsheetName ? ` (${res.spreadsheetName})` : ''}.`,
-      tabsFound: res.tabs || [],
-      productCount: snap.products.length,
-    };
-  }
-
-  const token = await getServiceAccountToken();
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(runtimeConfig.sheetId)}?fields=properties.title,sheets.properties.title`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const meta = (await metaRes.json()) as {
-    properties?: { title?: string };
-    sheets?: { properties: { title: string } }[];
-    error?: { message?: string };
-  };
-  if (!metaRes.ok) {
-    throw new Error(meta.error?.message || 'فشل الاتصال بـ Google Sheets API');
-  }
+  const res = await callAppsScript<{ tabs?: string[]; spreadsheetName?: string }>('test');
   const snap = await getSnapshot(true);
+  const afterTest = await callAppsScript<{ tabs?: string[]; spreadsheetName?: string }>('test');
   return {
     ok: true,
-    mode: 'service_account',
-    message: `متصل بملف "${meta.properties?.title || 'Google Sheet'}" عبر Service Account.`,
-    tabsFound: meta.sheets?.map((s) => s.properties.title) || [],
+    mode: 'apps_script',
+    message: `تم الاتصال بنجاح عبر Google Apps Script${res.spreadsheetName ? ` (${res.spreadsheetName})` : ''}.`,
+    tabsFound: afterTest.tabs || res.tabs || [],
     productCount: snap.products.length,
   };
 }
 
 export async function initializeSheetsStructure(seedSampleData = true): Promise<{ ok: boolean; message: string }> {
   invalidateCache();
+  ensuredAdminTabInSession = false;
+  ensuredProgramsTabInSession = false;
 
-  if (runtimeConfig.sheetsMode === 'demo') {
-    return {
-      ok: false,
-      message: 'النظام ما زال في الوضع التجريبي. اختر Google Apps Script وأدخل رابط Web App أولاً ثم اضغط تهيئة الأوراق.',
-    };
-  }
-
-  const seedSnap = memoryStore;
   const tabsPayload: Record<string, string[][]> = {};
   for (const tab of SHEET_SCHEMA_TABS) {
-    tabsPayload[tab.tabName] = seedSampleData ? buildSeedRowsForTab(tab.tabName, seedSnap) : [tab.columns.map((c) => c.name)];
+    tabsPayload[tab.tabName] = seedSampleData ? buildSeedRowsForTab(tab.tabName) : [tab.columns.map((c) => c.name)];
   }
 
-  if (runtimeConfig.sheetsMode === 'apps_script') {
-    await callAppsScript('init', { tabs: tabsPayload, seedSampleData });
-    return { ok: true, message: 'تم إنشاء الأوراق الثماني (بما فيها ورقة Admin) وتعبئة العناوين والبيانات بنجاح عبر Apps Script.' };
-  }
-
-  const token = await getServiceAccountToken();
-  const sheetId = runtimeConfig.sheetId;
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}?fields=sheets.properties.title`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const meta = (await metaRes.json()) as { sheets?: { properties: { title: string } }[]; error?: { message?: string } };
-  if (!metaRes.ok) {
-    throw new Error(meta.error?.message || 'تعذر الوصول إلى ملف الشيت.');
-  }
-
-  const existingTitles = new Set((meta.sheets || []).map((s) => s.properties.title));
-  const missingTabs = SHEET_SCHEMA_TABS.filter((t) => !existingTitles.has(t.tabName));
-  if (missingTabs.length > 0) {
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}:batchUpdate`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: missingTabs.map((t) => ({ addSheet: { properties: { title: t.tabName } } })),
-      }),
-    });
-  }
-
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values:batchUpdate`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      valueInputOption: 'USER_ENTERED',
-      data: Object.entries(tabsPayload).map(([tabName, values]) => ({
-        range: `${tabName}!A1`,
-        values,
-      })),
-    }),
-  });
-
-  return { ok: true, message: 'تمت تهيئة جميع أوراق الشيت (8 أوراق بما فيها ورقة Admin) وإدراج البيانات بنجاح!' };
+  await callAppsScript('init', { tabs: tabsPayload, seedSampleData });
+  return {
+    ok: true,
+    message: `تم إنشاء وتهيئة جميع أوراق الشيت الـ ${SHEET_SCHEMA_TABS.length} (بما فيها Admin وPrograms وEnrollments) بنجاح.`,
+  };
 }
 
-function serializeEntityRow(tabName: string, entity: unknown): Record<string, string> {
+export type EntityTabName =
+  | 'Categories'
+  | 'Products'
+  | 'Programs'
+  | 'Banners'
+  | 'Cities'
+  | 'Coupons'
+  | 'Orders'
+  | 'Enrollments';
+
+function serializeEntityRow(tabName: EntityTabName, entity: unknown): Record<string, string> {
   if (tabName === 'Categories') {
     const c = entity as Category;
     return {
@@ -1037,6 +828,28 @@ function serializeEntityRow(tabName: string, entity: unknown): Record<string, st
       image_url: p.image_url,
       gallery_urls: JSON.stringify(p.gallery_urls || []),
       variants: JSON.stringify(p.variants || []),
+      is_featured: p.is_featured ? 'TRUE' : 'FALSE',
+      is_active: p.is_active ? 'TRUE' : 'FALSE',
+      created_at: p.created_at,
+    };
+  }
+  if (tabName === 'Programs') {
+    const p = entity as TrainingProgram;
+    return {
+      id: p.id,
+      title: p.title,
+      instructor: p.instructor,
+      category: p.category,
+      format: p.format,
+      duration: p.duration,
+      start_date: p.start_date,
+      seats_total: String(p.seats_total),
+      seats_left: String(p.seats_left),
+      price: String(p.price),
+      compare_at_price: p.compare_at_price !== null ? String(p.compare_at_price) : '',
+      image_url: p.image_url,
+      syllabus: JSON.stringify(p.syllabus || []),
+      description: p.description,
       is_featured: p.is_featured ? 'TRUE' : 'FALSE',
       is_active: p.is_active ? 'TRUE' : 'FALSE',
       created_at: p.created_at,
@@ -1101,59 +914,44 @@ function serializeEntityRow(tabName: string, entity: unknown): Record<string, st
       notes: o.notes,
     };
   }
+  if (tabName === 'Enrollments') {
+    const e = entity as ProgramEnrollment;
+    return {
+      id: e.id,
+      created_at: e.created_at,
+      program_id: e.program_id,
+      program_title: e.program_title,
+      student_name: e.student_name,
+      student_phone: e.student_phone,
+      telegram_username: e.telegram_username,
+      payment_method: e.payment_method,
+      bank_reference: e.bank_reference,
+      price_paid: String(e.price_paid),
+      status: e.status,
+      notes: e.notes,
+    };
+  }
   return entity as Record<string, string>;
 }
 
 export async function upsertEntity(
-  tabName: 'Categories' | 'Products' | 'Banners' | 'Cities' | 'Coupons' | 'Orders',
-  entity: Category | Product | Banner | CityZone | Coupon | Order
+  tabName: EntityTabName,
+  entity: Category | Product | TrainingProgram | Banner | CityZone | Coupon | Order | ProgramEnrollment
 ): Promise<void> {
   invalidateCache();
-
-  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    await callAppsScript('upsert', {
-      tab: tabName,
-      keyField: 'id',
-      row: serializeEntityRow(tabName, entity),
-    });
-    return;
-  }
-  if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
-    await upsertRowServiceAccount(tabName, 'id', serializeEntityRow(tabName, entity));
-    return;
-  }
-
-  const list = memoryStore[
-    tabName.toLowerCase() as 'categories' | 'products' | 'banners' | 'cities' | 'coupons' | 'orders'
-  ] as { id: string }[];
-  const idx = list.findIndex((item) => item.id === entity.id);
-  if (idx >= 0) {
-    list[idx] = entity;
-  } else {
-    if (tabName === 'Orders') list.unshift(entity);
-    else list.push(entity);
-  }
+  await callAppsScript('upsert', {
+    tab: tabName,
+    keyField: 'id',
+    row: serializeEntityRow(tabName, entity),
+  });
 }
 
 export async function deleteEntity(
-  tabName: 'Categories' | 'Products' | 'Banners' | 'Cities' | 'Coupons',
+  tabName: 'Categories' | 'Products' | 'Programs' | 'Banners' | 'Cities' | 'Coupons',
   id: string
 ): Promise<void> {
   invalidateCache();
-
-  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    await callAppsScript('delete', { tab: tabName, keyField: 'id', keyValue: id });
-    return;
-  }
-  if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
-    await deleteRowServiceAccount(tabName, 'id', id);
-    return;
-  }
-
-  const key = tabName.toLowerCase() as 'categories' | 'products' | 'banners' | 'cities' | 'coupons';
-  const filtered = (memoryStore[key] as { id: string }[]).filter((item) => item.id !== id);
-  // @ts-expect-error dynamic assignment on typed memoryStore
-  memoryStore[key] = filtered;
+  await callAppsScript('delete', { tab: tabName, keyField: 'id', keyValue: id });
 }
 
 export async function saveStoreSettings(settings: StoreSettings): Promise<void> {
@@ -1175,35 +973,43 @@ export async function saveStoreSettings(settings: StoreSettings): Promise<void> 
     announcement_text: 'شريط الإعلانات العلوي',
   };
 
-  if (runtimeConfig.sheetsMode === 'apps_script' && runtimeConfig.appsScriptUrl) {
-    const rows = Object.entries(settings).map(([k, v]) => ({
-      key: k,
-      value: String(v ?? ''),
-      label: labels[k] || k,
-    }));
-    await callAppsScript('saveSettings', { rows });
-    return;
+  const rows = Object.entries(settings).map(([k, v]) => ({
+    key: k,
+    value: String(v ?? ''),
+    label: labels[k] || k,
+  }));
+
+  // Preserve server-only Telegram credentials inside Settings sheet even on older deployed Apps Scripts
+  if (runtimeConfig.telegramBotToken) {
+    rows.push({
+      key: '__tg_bot_token',
+      value: runtimeConfig.telegramBotToken,
+      label: 'رمز بوت تيليجرام (خاص بالسيرفر)',
+    });
+  }
+  if (runtimeConfig.telegramAdminChatId) {
+    rows.push({
+      key: '__tg_admin_chat_id',
+      value: runtimeConfig.telegramAdminChatId,
+      label: 'معرف الإداري في تيليجرام',
+    });
+  }
+  if (runtimeConfig.telegramWebhookSecret) {
+    rows.push({
+      key: '__tg_webhook_secret',
+      value: runtimeConfig.telegramWebhookSecret,
+      label: 'كلمة سر Webhook تيليجرام',
+    });
   }
 
-  if (runtimeConfig.sheetsMode === 'service_account' && runtimeConfig.sheetId) {
-    for (const [k, v] of Object.entries(settings)) {
-      await upsertRowServiceAccount('Settings', 'key', {
-        key: k,
-        value: String(v ?? ''),
-        label: labels[k] || k,
-      });
-    }
-    return;
-  }
-
-  memoryStore.settings = { ...settings };
+  await callAppsScript('saveSettings', { rows });
 }
 
 export const APPS_SCRIPT_TEMPLATE = `// انسخ هذا الكود بالكامل وضعه في: الإضافات (Extensions) -> Apps Script داخل ملف Google Sheets
 // ثم اضغط نشر (Deploy) -> نشر جديد (New deployment) -> تطبيق ويب (Web app)
-// اختر "أياً كان" (Anyone) للوصول، وانسخ رابط الـ Web App إلى لوحة تحكم المتجر.
+// اختر "أياً كان" (Anyone) للوصول، وانسخ رابط الـ Web App إلى إعدادات السيرفر.
 
-const SECRET_TOKEN = "CHANGE_THIS_TO_YOUR_SECRET"; // نفس المفتاح السري الذي تضعه في إعدادات المتجر
+const SECRET_TOKEN = "CHANGE_THIS_TO_YOUR_SECRET"; // اختياري: اتركه كما هو أو ضع نفس المفتاح السري
 
 function doPost(e) {
   try {
@@ -1310,12 +1116,15 @@ function doPost(e) {
       const rows = (body.payload && body.payload.rows) || [];
       let sheet = ss.getSheetByName("Settings");
       if (!sheet) sheet = ss.insertSheet("Settings");
+      const incomingKeys = {};
+      rows.forEach(function(r) { incomingKeys[String(r.key)] = true; });
       const preserved = [];
       if (sheet.getLastRow() >= 2 && sheet.getLastColumn() >= 2) {
         const existing = sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.min(3, sheet.getLastColumn())).getDisplayValues();
         existing.forEach(function(r) {
-          if (String(r[0] || "").indexOf("__admin_") === 0) {
-            preserved.push([r[0], r[1] || "", r[2] || ""]);
+          const k = String(r[0] || "");
+          if ((k.indexOf("__admin_") === 0 || k.indexOf("__tg_") === 0) && !incomingKeys[k]) {
+            preserved.push([k, r[1] || "", r[2] || ""]);
           }
         });
       }

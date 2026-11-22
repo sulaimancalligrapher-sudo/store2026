@@ -6,6 +6,7 @@ import {
   Edit3,
   ExternalLink,
   FolderKanban,
+  GraduationCap,
   Lock,
   LogOut,
   MapPin,
@@ -18,14 +19,29 @@ import {
   Tag,
   Trash2,
 } from 'lucide-react';
-import type { OrderStatus, Product } from '../../shared/types.ts';
+import type {
+  EnrollmentStatus,
+  OrderStatus,
+  Product,
+  TrainingFormat,
+  TrainingProgram,
+} from '../../shared/types.ts';
 import { extractGoogleDriveFileId } from '../../shared/imageUrl.ts';
+import { getProductPriceSummary } from '../../shared/variants.ts';
 import { ApiError, authApi, createAdminApi, type AdminOverviewResponse } from '../lib/api.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 import { ProductFormModal } from './ProductFormModal.tsx';
+import { ProgramFormModal } from './ProgramFormModal.tsx';
 import { SettingsConnectionsTab } from './SettingsConnectionsTab.tsx';
 
-type AdminTab = 'overview' | 'products' | 'orders' | 'catalog' | 'marketing' | 'settings';
+type AdminTab =
+  | 'overview'
+  | 'products'
+  | 'programs'
+  | 'orders'
+  | 'catalog'
+  | 'marketing'
+  | 'settings';
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
   pending: 'قيد المراجعة',
@@ -33,6 +49,19 @@ const STATUS_LABELS: Record<OrderStatus, string> = {
   shipped: 'تم الشحن',
   delivered: 'تم التسليم',
   cancelled: 'ملغي',
+};
+
+const ENROLLMENT_STATUS_LABELS: Record<EnrollmentStatus, string> = {
+  pending: 'قيد المراجعة',
+  confirmed: 'مقبول ومؤكد',
+  completed: 'مكتمل',
+  cancelled: 'ملغي',
+};
+
+const FORMAT_LABELS: Record<TrainingFormat, string> = {
+  online_live: 'عن بُعد مباشر',
+  in_person: 'حضوري',
+  recorded: 'مسجل بالكامل',
 };
 
 interface AdminPanelProps {
@@ -61,12 +90,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Products state
+  // Products & Programs modals
   const [productQuery, setProductQuery] = useState('');
   const [editingProduct, setEditingProduct] = useState<Product | null | undefined>(undefined);
+  const [editingProgram, setEditingProgram] = useState<TrainingProgram | null | undefined>(undefined);
 
-  // Orders filter
+  // Orders & Enrollments filters
   const [orderStatusFilter, setOrderStatusFilter] = useState<'all' | OrderStatus>('all');
+  const [enrollStatusFilter, setEnrollStatusFilter] = useState<'all' | EnrollmentStatus>('all');
 
   // Category quick form
   const [catName, setCatName] = useState('');
@@ -127,7 +158,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleMutationError = useCallback(
     (err: unknown, fallback: string) => {
       if (err instanceof ApiError && err.status === 401) {
-        handleSessionExpired('انتهت جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+        handleSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
         return;
       }
       setErrorMsg(err instanceof Error ? err.message : fallback);
@@ -144,7 +175,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setData(res);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        handleSessionExpired('جلسة الإدارة غير صالحة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+        handleSessionExpired('جلسة الإدارة غير صالحة أو منتهية. يرجى تسجيل الدخول مجدداً.');
       } else {
         setErrorMsg(err instanceof Error ? err.message : 'تعذر تحميل البيانات');
       }
@@ -304,6 +335,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const totalRevenue = validOrders.reduce((s, o) => s + o.total, 0);
   const pendingOrders = data.orders.filter((o) => o.status === 'pending').length;
   const lowStockProducts = data.products.filter((p) => p.stock <= 5);
+  const programsList = data.programs || [];
+  const enrollmentsList = data.enrollments || [];
 
   const filteredProducts = data.products.filter(
     (p) =>
@@ -315,9 +348,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const filteredOrders =
     orderStatusFilter === 'all' ? data.orders : data.orders.filter((o) => o.status === orderStatusFilter);
 
+  const filteredEnrollments =
+    enrollStatusFilter === 'all'
+      ? enrollmentsList
+      : enrollmentsList.filter((e) => e.status === enrollStatusFilter);
+
   const navItems: { id: AdminTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'نظرة عامة', icon: <BarChart3 className="h-4 w-4" /> },
     { id: 'products', label: `المنتجات (${data.products.length})`, icon: <Package className="h-4 w-4" /> },
+    { id: 'programs', label: `البرامج التدريبية (${programsList.length})`, icon: <GraduationCap className="h-4 w-4" /> },
     { id: 'orders', label: `الطلبات (${data.orders.length})`, icon: <ShoppingCart className="h-4 w-4" /> },
     { id: 'catalog', label: 'الأقسام والبانرات', icon: <FolderKanban className="h-4 w-4" /> },
     { id: 'marketing', label: 'الكوبونات والمدن', icon: <Tag className="h-4 w-4" /> },
@@ -331,18 +370,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-[#141413]">لوحة إدارة {data.settings.store_name}</h1>
           <p className="text-xs text-[#6E6A63] mt-0.5">
-            مصدر البيانات:{' '}
-            <span className="font-semibold text-[#141413]">
-              {data.integrationStatus.sheetsMode === 'apps_script'
-                ? 'Google Sheets (Apps Script)'
-                : data.integrationStatus.sheetsMode === 'service_account'
-                  ? 'Google Sheets (Service Account)'
-                  : 'وضع المعاينة التجريبي'}
-            </span>
+            قاعدة البيانات:{' '}
+            <span className="font-semibold text-emerald-800">Google Sheets (Apps Script المباشر)</span>
             {' · '}
             إشعارات تيليجرام:{' '}
             <span className={data.integrationStatus.telegramConfigured ? 'text-emerald-700 font-semibold' : 'text-amber-700'}>
-              {data.integrationStatus.telegramConfigured ? 'مفعّلة' : 'غير مفعّلة'}
+              {data.integrationStatus.telegramConfigured ? 'مفعّلة' : 'غير مضبوطة'}
             </span>
           </p>
         </div>
@@ -376,25 +409,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </button>
         </div>
       </div>
-
-      {/* Demo Mode Banner */}
-      {data.integrationStatus.sheetsMode === 'demo' && tab !== 'settings' && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" />
-            <span>
-              <strong>وضع المعاينة التجريبي:</strong> الطلبات والمنتجات الجديدة لا تُحفظ حالياً في Google Sheets. فعّل الربط أولاً من الإعدادات.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setTab('settings')}
-            className="rounded-lg bg-[#141413] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
-          >
-            إعدادات ربط الشيت
-          </button>
-        </div>
-      )}
 
       {errorMsg && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-900">
@@ -433,15 +447,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </p>
             </div>
             <div className="rounded-xl border border-[#E5E2DC] bg-white p-5">
-              <p className="text-xs text-[#6E6A63]">إجمالي الطلبات</p>
-              <p className="mt-2 text-2xl font-bold text-[#141413] tabular-nums">{data.orders.length}</p>
+              <p className="text-xs text-[#6E6A63]">الطلبات · طلبات بانتظار المراجعة</p>
+              <p className="mt-2 text-2xl font-bold text-[#141413] tabular-nums">
+                {data.orders.length} <span className="text-sm font-semibold text-[#B45309]">({pendingOrders} جديد)</span>
+              </p>
             </div>
             <div className="rounded-xl border border-[#E5E2DC] bg-white p-5">
-              <p className="text-xs text-[#6E6A63]">طلبات بانتظار المراجعة</p>
-              <p className="mt-2 text-2xl font-bold text-[#B45309] tabular-nums">{pendingOrders}</p>
+              <p className="text-xs text-[#6E6A63]">تسجيلات البرامج التدريبية</p>
+              <p className="mt-2 text-2xl font-bold text-[#141413] tabular-nums">{enrollmentsList.length}</p>
             </div>
             <div className="rounded-xl border border-[#E5E2DC] bg-white p-5">
-              <p className="text-xs text-[#6E6A63]">منتجات قارب مخزونها على النفاد</p>
+              <p className="text-xs text-[#6E6A63]">منتجات بمخزون منخفض (5 أو أقل)</p>
               <p className="mt-2 text-2xl font-bold text-[#141413] tabular-nums">{lowStockProducts.length}</p>
             </div>
           </div>
@@ -539,7 +555,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <tr>
                   <th className="px-4 py-3 font-semibold">المنتج</th>
                   <th className="px-4 py-3 font-semibold">القسم</th>
-                  <th className="px-4 py-3 font-semibold">السعر</th>
+                  <th className="px-4 py-3 font-semibold">السعر والخيارات</th>
                   <th className="px-4 py-3 font-semibold">المخزون</th>
                   <th className="px-4 py-3 font-semibold">الحالة</th>
                   <th className="px-4 py-3 font-semibold">إجراءات</th>
@@ -548,6 +564,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <tbody className="divide-y divide-[#E5E2DC]">
                 {filteredProducts.map((p) => {
                   const cat = data.categories.find((c) => c.id === p.category_id);
+                  const summary = getProductPriceSummary(p);
                   return (
                     <tr key={p.id} className="hover:bg-[#FAF9F6]">
                       <td className="px-4 py-3">
@@ -562,8 +579,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       </td>
                       <td className="px-4 py-3 text-xs text-[#44413C]">{cat?.name || '-'}</td>
-                      <td className="px-4 py-3 tabular-nums font-semibold text-[#141413]">
-                        {p.price} {currency}
+                      <td className="px-4 py-3 tabular-nums text-[#141413]">
+                        <span className="font-semibold">
+                          {summary.hasRange ? `${summary.minPrice} - ${summary.maxPrice}` : summary.defaultPrice} {currency}
+                        </span>
+                        {p.variants.length > 0 && (
+                          <span className="block text-[11px] text-[#6E6A63]">{p.variants.length} خيارات</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 tabular-nums font-semibold">
                         <span className={p.stock <= 5 ? 'text-red-700' : 'text-[#141413]'}>{p.stock}</span>
@@ -622,7 +644,207 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 3: Orders */}
+      {/* TAB 3: Training Programs & Enrollments */}
+      {tab === 'programs' && (
+        <div className="space-y-8">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-[#141413]">البرامج والدورات التدريبية (ورقة Programs)</h2>
+                <p className="text-xs text-[#6E6A63]">تظهر مباشرة في قسم «البرامج التدريبية» بواجهة المتجر مع حجز المقاعد.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingProgram(null)}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#141413] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#2A2A28] cursor-pointer"
+              >
+                <Plus className="h-4 w-4" />
+                <span>إضافة برنامج تدريبي</span>
+              </button>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-[#E5E2DC] bg-white">
+              <table className="w-full text-right text-sm">
+                <thead className="bg-[#FAF9F6] text-xs text-[#6E6A63] border-b border-[#E5E2DC]">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">البرنامج التدريبي</th>
+                    <th className="px-4 py-3 font-semibold">النمط والمدة</th>
+                    <th className="px-4 py-3 font-semibold">الرسوم</th>
+                    <th className="px-4 py-3 font-semibold">المقاعد المتبقية</th>
+                    <th className="px-4 py-3 font-semibold">الحالة</th>
+                    <th className="px-4 py-3 font-semibold">إجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E5E2DC]">
+                  {programsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-xs text-[#6E6A63]">
+                        لا توجد برامج تدريبية بعد. أضف برنامجك الأول من الزر بالأعلى.
+                      </td>
+                    </tr>
+                  ) : (
+                    programsList.map((prog) => (
+                      <tr key={prog.id} className="hover:bg-[#FAF9F6]">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-16 shrink-0 overflow-hidden rounded-md border border-[#E5E2DC]">
+                              <SafeImage src={prog.image_url} alt={prog.title} aspectClass="aspect-[16/10]" />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-[#141413]">{prog.title}</p>
+                              <p className="text-xs text-[#6E6A63]">
+                                {prog.instructor || 'بدون مدرب محدد'} · {prog.start_date || 'تسجيل مفتوح'}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-[#44413C]">
+                          <span className="block font-medium text-[#141413]">{FORMAT_LABELS[prog.format]}</span>
+                          <span className="text-[#6E6A63]">{prog.duration}</span>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums font-semibold text-[#141413]">
+                          {prog.price <= 0 ? 'مجاني' : `${prog.price} ${currency}`}
+                        </td>
+                        <td className="px-4 py-3 tabular-nums font-semibold">
+                          <span className={prog.seats_left <= 3 ? 'text-red-700' : 'text-[#141413]'}>
+                            {prog.seats_left} / {prog.seats_total}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await api.saveProgram({ ...prog, is_active: !prog.is_active }, true);
+                                await refreshAll();
+                              } catch (err) {
+                                handleMutationError(err, 'تعذر تحديث حالة البرنامج');
+                              }
+                            }}
+                            className={`font-semibold cursor-pointer ${
+                              prog.is_active ? 'text-emerald-700' : 'text-[#8A847B]'
+                            }`}
+                          >
+                            {prog.is_active ? 'ظاهر' : 'مخفي'}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEditingProgram(prog)}
+                              className="rounded-lg border border-[#E5E2DC] p-1.5 text-[#44413C] hover:text-[#141413] cursor-pointer"
+                              title="تعديل"
+                            >
+                              <Edit3 className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await api.deleteProgram(prog.id);
+                                  await refreshAll();
+                                } catch (err) {
+                                  handleMutationError(err, 'تعذر حذف البرنامج');
+                                }
+                              }}
+                              className="rounded-lg border border-[#E5E2DC] p-1.5 text-[#6E6A63] hover:text-red-700 cursor-pointer"
+                              title="حذف"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Enrollments List */}
+          <div className="space-y-4 border-t border-[#E5E2DC] pt-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-[#141413]">تسجيلات المتدربين (ورقة Enrollments)</h2>
+                <p className="text-xs text-[#6E6A63]">إجمالي التسجيلات المسجلة: {enrollmentsList.length}</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(['all', 'pending', 'confirmed', 'completed', 'cancelled'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setEnrollStatusFilter(st)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                      enrollStatusFilter === st
+                        ? 'border-[#141413] bg-[#141413] text-white'
+                        : 'border-[#E5E2DC] bg-white text-[#44413C]'
+                    }`}
+                  >
+                    {st === 'all' ? 'الكل' : ENROLLMENT_STATUS_LABELS[st]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {filteredEnrollments.length === 0 ? (
+              <div className="rounded-xl border border-[#E5E2DC] bg-white py-10 text-center text-xs text-[#6E6A63]">
+                لا توجد تسجيلات مطابقة لهذا الفلتر بعد.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredEnrollments.map((enr) => (
+                  <div
+                    key={enr.id}
+                    className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E5E2DC] bg-white p-4 text-xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono-num font-bold text-sm text-[#141413]">{enr.id}</span>
+                        <span className="text-[#6E6A63]">
+                          · {new Date(enr.created_at).toLocaleString('ar-SA')}
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-[#141413]">{enr.program_title}</p>
+                      <p className="text-[#44413C]">
+                        المتدرب: <strong>{enr.student_name}</strong> · {enr.student_phone}
+                        {enr.telegram_username ? ` · تيليجرام: ${enr.telegram_username}` : ''}
+                      </p>
+                      <p className="text-[#6E6A63]">
+                        الرسوم: <strong className="tabular-nums text-[#141413]">{enr.price_paid <= 0 ? 'مجاني' : `${enr.price_paid} ${currency}`}</strong>
+                        {enr.bank_reference ? ` · مرجع الحوالة: ${enr.bank_reference}` : ''}
+                        {enr.notes ? ` · ملاحظة: ${enr.notes}` : ''}
+                      </p>
+                    </div>
+
+                    <select
+                      value={enr.status}
+                      onChange={async (e) => {
+                        try {
+                          await api.updateEnrollmentStatus(enr.id, e.target.value as EnrollmentStatus);
+                          await refreshAll();
+                        } catch (err) {
+                          handleMutationError(err, 'تعذر تحديث حالة التسجيل');
+                        }
+                      }}
+                      className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs font-semibold text-[#141413] focus:outline-none"
+                    >
+                      {(Object.keys(ENROLLMENT_STATUS_LABELS) as EnrollmentStatus[]).map((st) => (
+                        <option key={st} value={st}>
+                          {ENROLLMENT_STATUS_LABELS[st]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: Orders */}
       {tab === 'orders' && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-1.5">
@@ -714,10 +936,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 4: Categories & Banners */}
+      {/* TAB 5: Categories & Banners */}
       {tab === 'catalog' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Categories */}
           <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
             <h2 className="text-base font-bold text-[#141413]">إدارة الأقسام</h2>
             <form
@@ -797,7 +1018,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
 
-          {/* Banners */}
           <div className="rounded-xl border border-[#E5E2DC] bg-white p-5 space-y-4">
             <h2 className="text-base font-bold text-[#141413]">إدارة البانرات الترويجية</h2>
             <form
@@ -886,7 +1106,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 5: Coupons & Cities */}
+      {/* TAB 6: Coupons & Cities */}
       {tab === 'marketing' && (
         <div className="space-y-4">
           {marketingFeedback && (
@@ -1233,7 +1453,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           setCityName(c.name);
                           setCityFee(String(c.delivery_fee));
                           setCityDays(c.estimated_days || '');
-                          setCityFreeMin(c.free_shipping_min !== null && c.free_shipping_min !== undefined ? String(c.free_shipping_min) : '');
+                          setCityFreeMin(
+                            c.free_shipping_min !== null && c.free_shipping_min !== undefined
+                              ? String(c.free_shipping_min)
+                              : ''
+                          );
                           setMarketingFeedback(null);
                         }}
                         className="rounded-md p-1.5 text-[#6E6A63] hover:bg-[#FAF9F6] hover:text-[#141413] cursor-pointer"
@@ -1269,7 +1493,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 6: Settings & Connections */}
+      {/* TAB 7: Settings & Connections */}
       {tab === 'settings' && (
         <SettingsConnectionsTab
           api={api}
@@ -1296,7 +1520,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             } catch (err) {
               if (err instanceof ApiError && err.status === 401) {
                 setEditingProduct(undefined);
-                handleSessionExpired('انتهت جلسة الإدارة أو أُعيد تشغيل الخادم. يرجى تسجيل الدخول مجدداً.');
+                handleSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
                 return;
               }
               throw err;
@@ -1332,6 +1556,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             }
           }}
           onClose={() => setEditingProduct(undefined)}
+        />
+      )}
+
+      {/* Program Add/Edit Modal */}
+      {editingProgram !== undefined && (
+        <ProgramFormModal
+          initial={editingProgram}
+          currency={currency}
+          onSave={async (payload, isEdit) => {
+            try {
+              await api.saveProgram(payload, isEdit);
+              await refreshAll();
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) {
+                setEditingProgram(undefined);
+                handleSessionExpired('انتهت جلسة الإدارة. يرجى تسجيل الدخول مجدداً.');
+                return;
+              }
+              throw err;
+            }
+          }}
+          onClose={() => setEditingProgram(undefined)}
         />
       )}
     </section>

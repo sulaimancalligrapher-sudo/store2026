@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import type { Category, Product } from '../../shared/types.ts';
+import type { Category, Product, ProductVariantOption } from '../../shared/types.ts';
 import { extractGoogleDriveFileId } from '../../shared/imageUrl.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 
@@ -8,6 +8,11 @@ function generateAutoSku(): string {
   const rand = Math.floor(1000 + Math.random() * 9000);
   const stamp = Date.now().toString().slice(-3);
   return `NKH-${stamp}${rand}`;
+}
+
+interface VariantRowState {
+  label: string;
+  priceText: string;
 }
 
 interface ProductFormModalProps {
@@ -38,14 +43,21 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   const [stock, setStock] = useState(initial ? String(initial.stock) : '10');
   const [imageUrl, setImageUrl] = useState(initial?.image_url || '');
   const [galleryText, setGalleryText] = useState((initial?.gallery_urls || []).join(', '));
-  const [variantsText, setVariantsText] = useState((initial?.variants || []).join('، '));
+  const [variantRows, setVariantRows] = useState<VariantRowState[]>(() => {
+    if (initial?.variants && initial.variants.length > 0) {
+      return initial.variants.map((v) => ({
+        label: v.label,
+        priceText: v.price !== null && v.price !== undefined ? String(v.price) : '',
+      }));
+    }
+    return [];
+  });
   const [description, setDescription] = useState(initial?.description || '');
   const [isFeatured, setIsFeatured] = useState(initial ? initial.is_featured : true);
   const [isActive, setIsActive] = useState(initial ? initial.is_active : true);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Inline category add/delete state
   const [addingCat, setAddingCat] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [catBusy, setCatBusy] = useState(false);
@@ -91,6 +103,20 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
       setErrorMsg('يرجى اختيار قسم أو إضافة قسم جديد أولاً.');
       return;
     }
+
+    const structuredVariants: ProductVariantOption[] = variantRows
+      .map((row) => {
+        const cleanLabel = row.label.trim();
+        if (!cleanLabel) return null;
+        const cleanPriceStr = row.priceText.trim();
+        const parsedPrice = cleanPriceStr !== '' ? Number(cleanPriceStr) : NaN;
+        return {
+          label: cleanLabel,
+          price: Number.isFinite(parsedPrice) && parsedPrice >= 0 ? parsedPrice : null,
+        };
+      })
+      .filter((v): v is ProductVariantOption => v !== null);
+
     setSaving(true);
     try {
       await onSave(
@@ -107,10 +133,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
             .split(/[،,]/)
             .map((s) => s.trim())
             .filter(Boolean),
-          variants: variantsText
-            .split(/[،,]/)
-            .map((s) => s.trim())
-            .filter(Boolean),
+          variants: structuredVariants,
           description: description.trim(),
           is_featured: isFeatured,
           is_active: isActive,
@@ -269,7 +292,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#44413C]">السعر ({currency}) *</label>
+              <label className="mb-1 block text-xs font-medium text-[#44413C]">السعر الأساسي ({currency}) *</label>
               <input
                 required
                 type="number"
@@ -350,30 +373,82 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                الخيارات / المقاسات / الألوان (مفصولة بفاصلة)
-              </label>
-              <input
-                value={variantsText}
-                onChange={(e) => setVariantsText(e.target.value)}
-                placeholder="أسود مطفي، رمادي حجري"
-                className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
-              />
+          {/* Per-Variant Custom Pricing Builder */}
+          <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-bold text-[#141413]">الخيارات والمقاسات مع تسعير مخصص لكل خيار</p>
+                <p className="text-[11px] text-[#6E6A63]">
+                  أضف مثلاً «حجم صغير» بسعر مختلف عن «حجم كبير». اترك السعر فارغاً لاستخدام السعر الأساسي.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVariantRows((prev) => [...prev, { label: '', priceText: '' }])}
+                className="inline-flex items-center gap-1 rounded-lg border border-[#141413] bg-white px-3 py-1.5 text-xs font-semibold text-[#141413] hover:bg-[#141413] hover:text-white transition-colors cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>إضافة خيار</span>
+              </button>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[#44413C]">
-                روابط صور إضافية (اختياري، مفصولة بفاصلة)
-              </label>
-              <input
-                value={galleryText}
-                onChange={(e) => setGalleryText(e.target.value)}
-                placeholder="https://drive.google.com/file/d/.../view?usp=sharing, https://..."
-                className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
-              />
-              <p className="mt-1 text-[11px] text-[#6E6A63]">يدعم روابط Google Drive أو الروابط المباشرة مفصولة بفاصلة.</p>
-            </div>
+
+            {variantRows.length > 0 && (
+              <div className="space-y-2">
+                {variantRows.map((row, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                    <div className="col-span-6">
+                      <input
+                        value={row.label}
+                        onChange={(e) =>
+                          setVariantRows((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, label: e.target.value } : item))
+                          )
+                        }
+                        placeholder="اسم الخيار (مثال: 16 بوصة - بني)"
+                        className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs focus:border-[#141413] focus:outline-none"
+                      />
+                    </div>
+                    <div className="col-span-5">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={row.priceText}
+                        onChange={(e) =>
+                          setVariantRows((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, priceText: e.target.value } : item))
+                          )
+                        }
+                        placeholder={`السعر (${price || 'الأساسي'} ${currency})`}
+                        className="w-full rounded-lg border border-[#E5E2DC] bg-white px-3 py-2 text-xs tabular-nums focus:border-[#141413] focus:outline-none"
+                      />
+                    </div>
+                    <div className="col-span-1 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setVariantRows((prev) => prev.filter((_, i) => i !== idx))}
+                        className="rounded-lg p-1.5 text-[#8A847B] hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                        title="حذف الخيار"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[#44413C]">
+              روابط صور إضافية (اختياري، مفصولة بفاصلة)
+            </label>
+            <input
+              value={galleryText}
+              onChange={(e) => setGalleryText(e.target.value)}
+              placeholder="https://drive.google.com/file/d/.../view?usp=sharing, https://..."
+              className="w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3.5 py-2 text-sm focus:border-[#141413] focus:bg-white focus:outline-none"
+            />
           </div>
 
           <div>

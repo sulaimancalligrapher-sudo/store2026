@@ -6,13 +6,17 @@ import type {
   Category,
   CityZone,
   Coupon,
+  EnrollmentStatus,
   IntegrationStatus,
   Order,
   OrderItem,
   OrderStatus,
   PaymentMethod,
   Product,
+  ProgramEnrollment,
   StoreSettings,
+  TrainingFormat,
+  TrainingProgram,
 } from '../shared/types.ts';
 import {
   claimInitialAdminPassword,
@@ -30,23 +34,27 @@ import {
   deleteEntity,
   getRuntimeConfig,
   getSnapshot,
-  getTelegramConfig,
+  getTelegramConfigAsync,
   initializeSheetsStructure,
   maskSecret,
   saveStoreSettings,
+  saveTelegramConfigToSheets,
   testSheetsConnection,
   updateRuntimeConfig,
   upsertEntity,
 } from './sheetsAdapter.ts';
 import {
   answerTelegramCallback,
+  editTelegramEnrollmentMessage,
   editTelegramOrderMessage,
   registerTelegramWebhook,
+  sendEnrollmentToTelegram,
   sendOrderToTelegram,
   sendTelegramBotReply,
   sendTelegramTestMessage,
 } from './telegramService.ts';
 import { normalizeImageUrl } from '../shared/imageUrl.ts';
+import { parseProductVariants, resolveVariantUnitPrice } from '../shared/variants.ts';
 
 function sanitizeUrl(url: unknown): string {
   return normalizeImageUrl(url);
@@ -54,6 +62,17 @@ function sanitizeUrl(url: unknown): string {
 
 function normalizePhoneDigits(phone: string): string {
   return String(phone || '').replace(/[^\d]/g, '');
+}
+
+function parseSyllabus(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((s) => String(s).trim()).filter(Boolean);
+  if (typeof raw === 'string') {
+    return raw
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function validateCouponCalculation(
@@ -109,9 +128,6 @@ function buildIntegrationStatus(): IntegrationStatus {
     sheetsMode: cfg.sheetsMode,
     appsScriptConfigured: Boolean(cfg.appsScriptUrl),
     appsScriptUrlMasked: cfg.appsScriptUrl ? maskSecret(cfg.appsScriptUrl, 24, 12) : '',
-    serviceAccountConfigured: Boolean(cfg.sheetId && cfg.serviceAccountEmail && cfg.serviceAccountPrivateKey),
-    sheetIdMasked: cfg.sheetId ? maskSecret(cfg.sheetId, 6, 4) : '',
-    serviceAccountEmailMasked: cfg.serviceAccountEmail ? maskSecret(cfg.serviceAccountEmail, 6, 12) : '',
     telegramConfigured: Boolean(cfg.telegramBotToken && cfg.telegramAdminChatId),
     telegramBotMasked: cfg.telegramBotToken ? maskSecret(cfg.telegramBotToken, 6, 4) : '',
     telegramChatIdMasked: cfg.telegramAdminChatId ? maskSecret(cfg.telegramAdminChatId, 3, 3) : '',
@@ -137,7 +153,6 @@ export function createApp() {
   app.get('/api/store/bootstrap', async (_req, res) => {
     try {
       const snap = await getSnapshot(false);
-      const cfg = getRuntimeConfig();
       res.setHeader('Cache-Control', 'public, max-age=15, s-maxage=30, stale-while-revalidate=120');
       res.json({
         settings: snap.settings,
@@ -145,15 +160,16 @@ export function createApp() {
           .filter((c) => c.is_active)
           .sort((a, b) => a.sort_order - b.sort_order),
         products: snap.products.filter((p) => p.is_active),
+        programs: snap.programs.filter((p) => p.is_active),
         banners: snap.banners
           .filter((b) => b.is_active)
           .sort((a, b) => a.sort_order - b.sort_order),
         cities: snap.cities.filter((c) => c.is_active),
-        mode: cfg.sheetsMode,
+        mode: 'apps_script',
       });
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'تعذر تحميل بيانات المتجر من قاعدة البيانات.',
+        error: err instanceof Error ? err.message : 'تعذر تحميل بيانات المتجر من Google Sheets.',
       });
     }
   });
@@ -254,7 +270,8 @@ export function createApp() {
           });
           return;
         }
-        const lineTotal = product.price * qty;
+        const unitPrice = resolveVariantUnitPrice(product, variant);
+        const lineTotal = unitPrice * qty;
         subtotal += lineTotal;
         verifiedItems.push({
           product_id: product.id,
@@ -262,7 +279,7 @@ export function createApp() {
           sku: product.sku,
           variant,
           qty,
-          unit_price: product.price,
+          unit_price: unitPrice,
           line_total: lineTotal,
           image_url: product.image_url,
         });
@@ -327,7 +344,8 @@ export function createApp() {
         await upsertEntity('Coupons', appliedCoupon);
       }
 
-      const tgResult = await sendOrderToTelegram(getTelegramConfig(), newOrder, snap.settings);
+      const tgConfig = await getTelegramConfigAsync(false);
+      const tgResult = await sendOrderToTelegram(tgConfig, newOrder, snap.settings);
 
       res.status(201).json({
         ok: true,
@@ -337,6 +355,88 @@ export function createApp() {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'حدث خطأ أثناء تسجيل الطلب.',
+      });
+    }
+  });
+
+  app.post('/api/store/enrollments', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const programId = String(b.program_id || '').trim();
+      const studentName = String(b.student_name || '').trim();
+      const studentPhone = String(b.student_phone || '').trim();
+      const telegramUsername = String(b.telegram_username || '').trim();
+      const bankReference = String(b.bank_reference || '').trim();
+      const notes = String(b.notes || '').trim();
+
+      if (!programId) {
+        res.status(400).json({ error: 'يرجى تحديد البرنامج التدريبي المطلوب.' });
+        return;
+      }
+      if (!studentName || studentName.length < 2) {
+        res.status(400).json({ error: 'يرجى إدخال الاسم الكامل للمتدرب.' });
+        return;
+      }
+      if (!studentPhone || normalizePhoneDigits(studentPhone).length < 7) {
+        res.status(400).json({ error: 'يرجى إدخال رقم جوال صحيح للتواصل.' });
+        return;
+      }
+
+      const snap = await getSnapshot(true);
+      const program = snap.programs.find((p) => p.id === programId && p.is_active);
+      if (!program) {
+        res.status(404).json({ error: 'البرنامج التدريبي غير موجود أو غير متاح حالياً.' });
+        return;
+      }
+      if (program.seats_left <= 0) {
+        res.status(400).json({ error: 'عذراً، اكتملت جميع المقاعد المتاحة في هذا البرنامج.' });
+        return;
+      }
+
+      const isFree = program.price <= 0;
+      const paymentMethod: ProgramEnrollment['payment_method'] = isFree
+        ? 'free'
+        : b.payment_method === 'bank_transfer'
+          ? 'bank_transfer'
+          : 'cod';
+
+      const enrollmentId = `ENR-${Math.floor(1000 + Math.random() * 9000)}-${crypto
+        .randomBytes(2)
+        .toString('hex')
+        .toUpperCase()}`;
+
+      const enrollment: ProgramEnrollment = {
+        id: enrollmentId,
+        created_at: new Date().toISOString(),
+        program_id: program.id,
+        program_title: program.title,
+        student_name: studentName,
+        student_phone: studentPhone,
+        telegram_username: telegramUsername,
+        payment_method: paymentMethod,
+        bank_reference: bankReference,
+        price_paid: program.price,
+        status: 'pending',
+        notes,
+      };
+
+      await upsertEntity('Enrollments', enrollment);
+      await upsertEntity('Programs', {
+        ...program,
+        seats_left: Math.max(0, program.seats_left - 1),
+      });
+
+      const tgConfig = await getTelegramConfigAsync(false);
+      const tgResult = await sendEnrollmentToTelegram(tgConfig, enrollment, snap.settings);
+
+      res.status(201).json({
+        ok: true,
+        enrollment,
+        telegramNotified: tgResult.sent,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'تعذر تسجيل الطلب في البرنامج التدريبي.',
       });
     }
   });
@@ -369,7 +469,7 @@ export function createApp() {
   // --- Telegram Bot Webhook (Interactive Confirm / Ship / Cancel Buttons) ---
   app.post('/api/telegram/webhook', async (req, res) => {
     try {
-      const tgConfig = getTelegramConfig();
+      const tgConfig = await getTelegramConfigAsync(false);
       if (tgConfig.webhookSecret) {
         const incomingSecret = String(req.headers['x-telegram-bot-api-secret-token'] || '');
         const a = Buffer.from(incomingSecret);
@@ -388,6 +488,7 @@ export function createApp() {
           message?: { chat: { id: number }; message_id: number };
         };
         const parts = String(cq.data || '').split(':');
+
         if (parts[0] === 'order_status' && parts[1] && parts[2]) {
           const orderId = parts[1];
           const nextStatus = parts[2] as OrderStatus;
@@ -409,6 +510,29 @@ export function createApp() {
               }
             } else {
               await answerTelegramCallback(tgConfig.botToken, cq.id, 'لم يتم العثور على الطلب');
+            }
+          }
+        } else if (parts[0] === 'enroll_status' && parts[1] && parts[2]) {
+          const enrollId = parts[1];
+          const nextStatus = parts[2] as EnrollmentStatus;
+          if (['pending', 'confirmed', 'completed', 'cancelled'].includes(nextStatus)) {
+            const snap = await getSnapshot(true);
+            const existing = snap.enrollments.find((e) => e.id === enrollId);
+            if (existing) {
+              const updated: ProgramEnrollment = { ...existing, status: nextStatus };
+              await upsertEntity('Enrollments', updated);
+              await answerTelegramCallback(tgConfig.botToken, cq.id, `تم تحديث التسجيل ${enrollId}`);
+              if (cq.message) {
+                await editTelegramEnrollmentMessage(
+                  tgConfig.botToken,
+                  cq.message.chat.id,
+                  cq.message.message_id,
+                  updated,
+                  snap.settings
+                );
+              }
+            } else {
+              await answerTelegramCallback(tgConfig.botToken, cq.id, 'لم يتم العثور على التسجيل');
             }
           }
         }
@@ -493,13 +617,35 @@ export function createApp() {
     }
   });
 
-  app.post('/api/admin/integrations/config', (req, res) => {
-    const result = updateRuntimeConfig(req.body || {});
-    if (!result.ok) {
-      res.status(400).json({ error: result.error });
-      return;
+  app.post('/api/admin/integrations/config', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const result = updateRuntimeConfig(body);
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+
+      const hasTelegramUpdate =
+        body.telegramBotToken !== undefined ||
+        body.telegramAdminChatId !== undefined ||
+        body.telegramWebhookSecret !== undefined;
+
+      if (hasTelegramUpdate) {
+        const cfg = getRuntimeConfig();
+        await saveTelegramConfigToSheets({
+          botToken: cfg.telegramBotToken,
+          adminChatId: cfg.telegramAdminChatId,
+          webhookSecret: cfg.telegramWebhookSecret,
+        });
+      }
+
+      res.json({ ok: true, integrationStatus: buildIntegrationStatus() });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'تعذر حفظ إعدادات الربط في Google Sheets.',
+      });
     }
-    res.json({ ok: true, integrationStatus: buildIntegrationStatus() });
   });
 
   app.post('/api/admin/sheets/test', async (_req, res) => {
@@ -523,7 +669,8 @@ export function createApp() {
 
   app.post('/api/admin/telegram/test', async (_req, res) => {
     const snap = await getSnapshot(false);
-    const result = await sendTelegramTestMessage(getTelegramConfig(), snap.settings.store_name);
+    const tgConfig = await getTelegramConfigAsync(true);
+    const result = await sendTelegramTestMessage(tgConfig, snap.settings.store_name);
     if (!result.ok) {
       res.status(400).json(result);
       return;
@@ -533,7 +680,8 @@ export function createApp() {
 
   app.post('/api/admin/telegram/webhook', async (req, res) => {
     const webhookUrl = String(req.body?.webhookUrl || '').trim();
-    const result = await registerTelegramWebhook(getTelegramConfig(), webhookUrl);
+    const tgConfig = await getTelegramConfigAsync(false);
+    const result = await registerTelegramWebhook(tgConfig, webhookUrl);
     if (!result.ok) {
       res.status(400).json(result);
       return;
@@ -556,7 +704,7 @@ export function createApp() {
         stock: Math.max(0, Math.floor(Number(b.stock || 0))),
         image_url: sanitizeUrl(b.image_url),
         gallery_urls: Array.isArray(b.gallery_urls) ? b.gallery_urls.map(sanitizeUrl).filter(Boolean) : [],
-        variants: Array.isArray(b.variants) ? b.variants.map((v: unknown) => String(v).trim()).filter(Boolean) : [],
+        variants: parseProductVariants(b.variants),
         is_featured: Boolean(b.is_featured),
         is_active: b.is_active !== false,
         created_at: new Date().toISOString(),
@@ -601,10 +749,7 @@ export function createApp() {
           b.gallery_urls !== undefined
             ? (Array.isArray(b.gallery_urls) ? b.gallery_urls : []).map(sanitizeUrl).filter(Boolean)
             : existing.gallery_urls,
-        variants:
-          b.variants !== undefined
-            ? (Array.isArray(b.variants) ? b.variants : []).map((v: unknown) => String(v).trim()).filter(Boolean)
-            : existing.variants,
+        variants: b.variants !== undefined ? parseProductVariants(b.variants) : existing.variants,
         is_featured: b.is_featured !== undefined ? Boolean(b.is_featured) : existing.is_featured,
         is_active: b.is_active !== undefined ? Boolean(b.is_active) : existing.is_active,
       };
@@ -621,6 +766,133 @@ export function createApp() {
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'تعذر حذف المنتج.' });
+    }
+  });
+
+  // Training Programs & Enrollments CRUD
+  app.post('/api/admin/programs', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const title = String(b.title || '').trim();
+      if (!title) {
+        res.status(400).json({ error: 'عنوان البرنامج التدريبي مطلوب.' });
+        return;
+      }
+      const seatsTotal = Math.max(1, Math.floor(Number(b.seats_total || 20)));
+      const seatsLeft =
+        b.seats_left !== undefined && String(b.seats_left).trim() !== ''
+          ? Math.max(0, Math.floor(Number(b.seats_left)))
+          : seatsTotal;
+      const rawFormat = String(b.format || 'online_live');
+      const format: TrainingFormat =
+        rawFormat === 'in_person' || rawFormat === 'recorded' ? rawFormat : 'online_live';
+
+      const program: TrainingProgram = {
+        id: b.id ? String(b.id).trim() : `prog_${Date.now().toString().slice(-6)}`,
+        title,
+        instructor: String(b.instructor || '').trim(),
+        category: String(b.category || 'تطوير مهارات').trim(),
+        format,
+        duration: String(b.duration || '').trim(),
+        start_date: String(b.start_date || '').trim(),
+        seats_total: seatsTotal,
+        seats_left: seatsLeft,
+        price: Math.max(0, Number(b.price || 0)),
+        compare_at_price: b.compare_at_price ? Math.max(0, Number(b.compare_at_price)) : null,
+        image_url: sanitizeUrl(b.image_url),
+        syllabus: parseSyllabus(b.syllabus),
+        description: String(b.description || '').trim(),
+        is_featured: Boolean(b.is_featured),
+        is_active: b.is_active !== false,
+        created_at: new Date().toISOString(),
+      };
+
+      await upsertEntity('Programs', program);
+      res.status(201).json({ ok: true, program });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'تعذر إضافة البرنامج التدريبي.' });
+    }
+  });
+
+  app.put('/api/admin/programs/:id', async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const snap = await getSnapshot(true);
+      const existing = snap.programs.find((p) => p.id === id);
+      if (!existing) {
+        res.status(404).json({ error: 'البرنامج التدريبي غير موجود.' });
+        return;
+      }
+      const b = req.body || {};
+      const rawFormat = b.format !== undefined ? String(b.format) : existing.format;
+      const format: TrainingFormat =
+        rawFormat === 'in_person' || rawFormat === 'recorded' ? rawFormat : 'online_live';
+
+      const updated: TrainingProgram = {
+        ...existing,
+        title: b.title !== undefined ? String(b.title).trim() : existing.title,
+        instructor: b.instructor !== undefined ? String(b.instructor).trim() : existing.instructor,
+        category: b.category !== undefined ? String(b.category).trim() : existing.category,
+        format,
+        duration: b.duration !== undefined ? String(b.duration).trim() : existing.duration,
+        start_date: b.start_date !== undefined ? String(b.start_date).trim() : existing.start_date,
+        seats_total:
+          b.seats_total !== undefined ? Math.max(1, Math.floor(Number(b.seats_total))) : existing.seats_total,
+        seats_left:
+          b.seats_left !== undefined ? Math.max(0, Math.floor(Number(b.seats_left))) : existing.seats_left,
+        price: b.price !== undefined ? Math.max(0, Number(b.price)) : existing.price,
+        compare_at_price:
+          b.compare_at_price !== undefined
+            ? b.compare_at_price
+              ? Math.max(0, Number(b.compare_at_price))
+              : null
+            : existing.compare_at_price,
+        image_url:
+          b.image_url !== undefined ? sanitizeUrl(b.image_url) || existing.image_url : existing.image_url,
+        syllabus: b.syllabus !== undefined ? parseSyllabus(b.syllabus) : existing.syllabus,
+        description: b.description !== undefined ? String(b.description).trim() : existing.description,
+        is_featured: b.is_featured !== undefined ? Boolean(b.is_featured) : existing.is_featured,
+        is_active: b.is_active !== undefined ? Boolean(b.is_active) : existing.is_active,
+      };
+      await upsertEntity('Programs', updated);
+      res.json({ ok: true, program: updated });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'تعذر تحديث البرنامج التدريبي.' });
+    }
+  });
+
+  app.delete('/api/admin/programs/:id', async (req, res) => {
+    try {
+      await deleteEntity('Programs', String(req.params.id));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'تعذر حذف البرنامج التدريبي.' });
+    }
+  });
+
+  app.patch('/api/admin/enrollments/:id', async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const snap = await getSnapshot(true);
+      const existing = snap.enrollments.find((e) => e.id === id);
+      if (!existing) {
+        res.status(404).json({ error: 'سجل التسجيل غير موجود.' });
+        return;
+      }
+      const nextStatus = req.body?.status as EnrollmentStatus;
+      if (nextStatus && !['pending', 'confirmed', 'completed', 'cancelled'].includes(nextStatus)) {
+        res.status(400).json({ error: 'حالة التسجيل غير صالحة.' });
+        return;
+      }
+      const updated: ProgramEnrollment = {
+        ...existing,
+        status: nextStatus || existing.status,
+        notes: req.body?.notes !== undefined ? String(req.body.notes) : existing.notes,
+      };
+      await upsertEntity('Enrollments', updated);
+      res.json({ ok: true, enrollment: updated });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'تعذر تحديث حالة التسجيل.' });
     }
   });
 

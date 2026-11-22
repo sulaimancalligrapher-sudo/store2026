@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Heart, MessageCircle, Minus, Plus, ShoppingBag, X } from 'lucide-react';
 import type { Category, Product, StoreSettings } from '../../shared/types.ts';
+import { resolveVariantUnitPrice } from '../../shared/variants.ts';
 import { SafeImage } from '../components/SafeImage.tsx';
 
 interface ProductModalProps {
@@ -24,10 +25,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
 }) => {
   const images = [product.image_url, ...(product.gallery_urls || [])].filter(Boolean);
   const [activeImage, setActiveImage] = useState(images[0] || '');
-  const [selectedVariant, setSelectedVariant] = useState(product.variants[0] || '');
+  const [selectedVariant, setSelectedVariant] = useState(product.variants[0]?.label || '');
   const [qty, setQty] = useState(1);
 
   const outOfStock = product.stock <= 0;
+  const activeUnitPrice = resolveVariantUnitPrice(product, selectedVariant);
   const tgUrl = settings.telegram_username
     ? `https://t.me/${settings.telegram_username.replace(/^@/, '')}`
     : '';
@@ -91,9 +93,9 @@ export const ProductModal: React.FC<ProductModalProps> = ({
 
               <div className="flex items-baseline gap-3">
                 <span className="text-2xl font-bold text-[#141413] tabular-nums">
-                  {product.price} {settings.currency}
+                  {activeUnitPrice} {settings.currency}
                 </span>
-                {product.compare_at_price && product.compare_at_price > product.price && (
+                {product.compare_at_price && product.compare_at_price > activeUnitPrice && (
                   <span className="text-base text-[#8A847B] line-through tabular-nums">
                     {product.compare_at_price} {settings.currency}
                   </span>
@@ -106,20 +108,33 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <div className="space-y-2 pt-2">
                   <span className="block text-xs font-semibold text-[#141413]">اختر الخيار:</span>
                   <div className="flex flex-wrap gap-2">
-                    {product.variants.map((variant) => (
-                      <button
-                        key={variant}
-                        type="button"
-                        onClick={() => setSelectedVariant(variant)}
-                        className={`rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          selectedVariant === variant
-                            ? 'border-[#141413] bg-[#141413] text-white'
-                            : 'border-[#E5E2DC] bg-white text-[#44413C] hover:border-[#141413]'
-                        }`}
-                      >
-                        {variant}
-                      </button>
-                    ))}
+                    {product.variants.map((variant) => {
+                      const variantPrice =
+                        variant.price !== null && variant.price !== undefined ? variant.price : product.price;
+                      return (
+                        <button
+                          key={variant.label}
+                          type="button"
+                          onClick={() => setSelectedVariant(variant.label)}
+                          className={`rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            selectedVariant === variant.label
+                              ? 'border-[#141413] bg-[#141413] text-white'
+                              : 'border-[#E5E2DC] bg-white text-[#44413C] hover:border-[#141413]'
+                          }`}
+                        >
+                          <span>{variant.label}</span>
+                          {variant.price !== null && (
+                            <span
+                              className={`mr-1.5 tabular-nums ${
+                                selectedVariant === variant.label ? 'text-[#E5E2DC]' : 'text-[#6E6A63]'
+                              }`}
+                            >
+                              · {variantPrice} {settings.currency}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}

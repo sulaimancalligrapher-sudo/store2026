@@ -5,10 +5,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ShoppingBag, X } from 'lucide-react';
-import type { Order, Product, StoreBootstrapData } from './shared/types.ts';
+import type { Order, Product, StoreBootstrapData, TrainingProgram } from './shared/types.ts';
 import { storeApi } from './client/lib/api.ts';
 import { StorefrontView } from './client/shop/StorefrontView.tsx';
 import { ProductModal } from './client/shop/ProductModal.tsx';
+import { ProgramModal } from './client/shop/ProgramModal.tsx';
 import { CartCheckoutDrawer, type CartEntry } from './client/shop/CartCheckoutDrawer.tsx';
 import { OrdersTrackingView } from './client/shop/OrdersTrackingView.tsx';
 import { AdminPanel } from './client/admin/AdminPanel.tsx';
@@ -19,6 +20,7 @@ type ActiveRoute = 'shop' | 'orders' | 'admin';
 const CART_STORAGE_KEY = 'nukhba_cart_v1';
 const ORDERS_STORAGE_KEY = 'nukhba_my_orders_v1';
 const FAV_STORAGE_KEY = 'nukhba_favorites_v1';
+const ADMIN_TOKEN_STORAGE_KEY = 'nukhba_admin_token_v1';
 
 export default function App() {
   const [route, setRoute] = useState<ActiveRoute>(() => {
@@ -34,10 +36,29 @@ export default function App() {
 
   const [cartOpen, setCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [selectedProgram, setSelectedProgram] = useState<TrainingProgram | null>(null);
   const [toastMsg, setToastMsg] = useState('');
 
-  // Admin token held strictly in memory
-  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminToken, setAdminTokenState] = useState<string | null>(() => {
+    try {
+      return window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+
+  const setAdminToken = useCallback((next: string | null) => {
+    setAdminTokenState(next);
+    try {
+      if (next) {
+        window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, next);
+      } else {
+        window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage access issues
+    }
+  }, []);
 
   const [cartItems, setCartItems] = useState<CartEntry[]>(() => {
     try {
@@ -80,7 +101,6 @@ export default function App() {
 
   useEffect(() => {
     fetchBootstrap();
-    // Initialize Telegram Mini App viewport if running inside Telegram
     const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void; expand?: () => void } } })
       .Telegram?.WebApp;
     tg?.ready?.();
@@ -91,7 +111,7 @@ export default function App() {
     try {
       localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cartItems));
     } catch {
-      // ignore storage quota errors
+      // ignore
     }
   }, [cartItems]);
 
@@ -263,6 +283,15 @@ export default function App() {
             >
               المنتجات
             </a>
+            <a
+              href="#programs"
+              onClick={() => {
+                if (route !== 'shop') navigate('shop');
+              }}
+              className="hover:text-[#141413] transition-colors whitespace-nowrap shrink-0"
+            >
+              البرامج التدريبية
+            </a>
             <button
               type="button"
               onClick={() => navigate('orders')}
@@ -297,6 +326,15 @@ export default function App() {
           >
             المتجر
           </button>
+          <a
+            href="#programs"
+            onClick={() => {
+              if (route !== 'shop') navigate('shop');
+            }}
+            className="px-2 py-1 whitespace-nowrap"
+          >
+            البرامج التدريبية
+          </a>
           <button
             type="button"
             onClick={() => navigate('orders')}
@@ -315,7 +353,8 @@ export default function App() {
             favorites={favorites}
             onToggleFavorite={toggleFavorite}
             onSelectProduct={(p) => setSelectedProduct(p)}
-            onQuickAdd={(p) => addToCart(p, 1, p.variants[0] || '')}
+            onQuickAdd={(p) => addToCart(p, 1, p.variants[0]?.label || '')}
+            onSelectProgram={(prog) => setSelectedProgram(prog)}
           />
         )}
 
@@ -355,6 +394,16 @@ export default function App() {
           onToggleFavorite={toggleFavorite}
           onAddToCart={addToCart}
           onClose={() => setSelectedProduct(null)}
+        />
+      )}
+
+      {/* Training Program Detail & Registration Modal */}
+      {selectedProgram && (
+        <ProgramModal
+          program={selectedProgram}
+          settings={storeData.settings}
+          onEnrolled={fetchBootstrap}
+          onClose={() => setSelectedProgram(null)}
         />
       )}
 

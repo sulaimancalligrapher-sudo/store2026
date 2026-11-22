@@ -1,7 +1,14 @@
 export type OrderStatus = 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
 export type PaymentMethod = 'cod' | 'bank_transfer';
 export type CouponDiscountType = 'percent' | 'fixed';
-export type SheetsConnectionMode = 'demo' | 'apps_script' | 'service_account';
+export type SheetsConnectionMode = 'apps_script';
+export type TrainingFormat = 'online_live' | 'in_person' | 'recorded';
+export type EnrollmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
+
+export interface ProductVariantOption {
+  label: string;
+  price: number | null;
+}
 
 export interface StoreSettings {
   store_name: string;
@@ -39,7 +46,7 @@ export interface Product {
   stock: number;
   image_url: string;
   gallery_urls: string[];
-  variants: string[];
+  variants: ProductVariantOption[];
   is_featured: boolean;
   is_active: boolean;
   created_at: string;
@@ -107,10 +114,46 @@ export interface Order {
   notes: string;
 }
 
+export interface TrainingProgram {
+  id: string;
+  title: string;
+  instructor: string;
+  category: string;
+  format: TrainingFormat;
+  duration: string;
+  start_date: string;
+  seats_total: number;
+  seats_left: number;
+  price: number;
+  compare_at_price: number | null;
+  image_url: string;
+  syllabus: string[];
+  description: string;
+  is_featured: boolean;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface ProgramEnrollment {
+  id: string;
+  created_at: string;
+  program_id: string;
+  program_title: string;
+  student_name: string;
+  student_phone: string;
+  telegram_username: string;
+  payment_method: PaymentMethod | 'free';
+  bank_reference: string;
+  price_paid: number;
+  status: EnrollmentStatus;
+  notes: string;
+}
+
 export interface StoreBootstrapData {
   settings: StoreSettings;
   categories: Category[];
   products: Product[];
+  programs: TrainingProgram[];
   banners: Banner[];
   cities: CityZone[];
   mode: SheetsConnectionMode;
@@ -120,9 +163,6 @@ export interface IntegrationStatus {
   sheetsMode: SheetsConnectionMode;
   appsScriptConfigured: boolean;
   appsScriptUrlMasked: string;
-  serviceAccountConfigured: boolean;
-  sheetIdMasked: string;
-  serviceAccountEmailMasked: string;
   telegramConfigured: boolean;
   telegramBotMasked: string;
   telegramChatIdMasked: string;
